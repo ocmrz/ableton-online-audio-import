@@ -114,15 +114,23 @@ function parseCandidate(raw: string): Candidate | null {
 export function activate(activation: ActivationContext) {
   const context = initialize(activation, "1.0.0");
 
-  void abletonFontFaceCss().then((css) => {
-    liveFontCss = css;
-  });
+  const fontCssPromise = abletonFontFaceCss(
+    context.environment.storageDirectory,
+  )
+    .catch((err) => {
+      console.warn("Could not load AbletonSansSmall:", err);
+      return "/* AbletonSansSmall not found */";
+    })
+    .then((css) => {
+      liveFontCss = css;
+      return css;
+    });
 
   type Placement = (filePath: string) => Promise<AudioClip<"1.0.0">>;
 
   const run = async (buildPlacement: () => Placement): Promise<void> => {
     if (!liveFontCss) {
-      liveFontCss = await abletonFontFaceCss();
+      liveFontCss = await fontCssPromise;
     }
     const placement = buildPlacement();
     const storageDir = requireDir(
