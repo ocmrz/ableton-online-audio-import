@@ -13,8 +13,7 @@ Online Audio searches YouTube, YouTube Music, and SoundCloud inside Ableton Live
 > Requires **Ableton Live 12.4.5 public beta** with Extensions.
 
 <p align="center">
-  <img src="docs/images/online-audio-light.png" alt="Online Audio search results in Ableton Live's light theme" width="49%">
-  <img src="docs/images/online-audio-dark.png" alt="Online Audio search results in Ableton Live's dark theme" width="49%">
+  <img src="docs/images/online-audio-search.jpg" alt="Online Audio search results in Ableton Live" width="100%">
 </p>
 
 ## Install
