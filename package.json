@@ -1,7 +1,7 @@
 {
   "name": "online-audio-import",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Search and import online audio into Ableton Live",
   "license": "MIT",
   "author": "",
