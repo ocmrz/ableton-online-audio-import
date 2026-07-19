@@ -340,6 +340,12 @@ export class MediaResolver {
     return waitForCaller(promise, signal);
   }
 
+  invalidate(candidate: Candidate, profile: MediaProfile): void {
+    const key = cacheKey(candidate, profile);
+    this.cache.get(key)?.controller.abort();
+    this.cache.delete(key);
+  }
+
   close(): void {
     for (const entry of this.cache.values()) entry.controller.abort();
     this.cache.clear();

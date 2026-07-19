@@ -23,9 +23,10 @@ export interface DownloadRetry {
 export interface DownloadAudioOptions {
   range?: TimeRange;
   ffmpegPath?: string;
-  mediaResolver?: MediaResolver;
+  mediaResolver?: Pick<MediaResolver, "resolve" | "invalidate" | "close">;
   onRetry?: (retry: DownloadRetry) => void;
   forceFailureForTesting?: boolean;
+  processRunner?: typeof runProcess;
 }
 
 export class DownloadError extends Error {
@@ -117,10 +118,6 @@ export function normalizeTimeRange(
   return { startS, endS };
 }
 
-function outputExtension(media: ResolvedMedia): string {
-  return media.ext === "mp4" ? "m4a" : media.ext;
-}
-
 function ffmpegHttpArgs(headers: Record<string, string>): string[] {
   const args: string[] = [];
   const extra: string[] = [];
@@ -146,92 +143,40 @@ function ffmpegHttpArgs(headers: Record<string, string>): string[] {
   return args;
 }
 
-async function downloadSelectedAudio(
-  ffmpegPath: string,
-  ytDlpPath: string,
-  candidate: Candidate,
-  tempDir: string,
-  range: TimeRange,
-  onProgress: (p: DownloadProgress) => void,
-  signal: AbortSignal,
-  resolver?: MediaResolver,
-): Promise<string> {
-  const ownedResolver = resolver ?? new MediaResolver(ytDlpPath);
-  try {
-    const media = await ownedResolver.resolve(candidate, signal, "download");
-    if (signal.aborted) throw new Error("aborted");
-
-    const clipDurationS = range.endS - range.startS;
-    const ext = outputExtension(media);
-    const base = await uniqueBaseName(
-      tempDir,
-      audioBaseName(candidate, range),
-    );
-    const outputPath = path.join(tempDir, `${base}.${ext}`);
-    const args = [
-      "-hide_banner",
-      "-loglevel",
-      "error",
-      "-nostdin",
-      "-y",
-      ...ffmpegHttpArgs(media.httpHeaders),
-      "-ss",
-      range.startS.toFixed(3),
-      "-i",
-      media.url,
-      "-t",
-      clipDurationS.toFixed(3),
-      "-map",
-      "0:a:0",
-      "-vn",
-      "-c:a",
-      "copy",
-      "-avoid_negative_ts",
-      "make_zero",
-      ...(ext === "m4a" ? ["-movflags", "+faststart"] : []),
-      "-progress",
-      "pipe:1",
-      "-nostats",
-      outputPath,
-    ];
-
-    let result;
-    try {
-      result = await runProcess(ffmpegPath, args, signal, (raw) => {
-        const outTime = /^out_time_us=(\d+)$/.exec(raw.trim());
-        if (!outTime?.[1]) return;
-        const elapsedS = Number(outTime[1]) / 1_000_000;
-        const pct = Math.min(
-          99,
-          Math.max(0, Math.round((elapsedS / clipDurationS) * 100)),
-        );
-        onProgress({ pct, speed: "" });
-      });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new Error(
-          "The managed audio trimmer could not be started. Try importing again.",
-        );
-      }
-      throw error;
-    }
-
-    if (signal.aborted) throw new Error("aborted");
-    if (result.code !== 0) {
-      throw new DownloadError(
-        `Selected-range download failed (FFmpeg exit ${result.code}).\n${result.stderr.slice(-800)}`,
-      );
-    }
-    await fsp.access(outputPath);
-    onProgress({ pct: 100, speed: "" });
-    return outputPath;
-  } finally {
-    if (!resolver) ownedResolver.close();
-  }
+export function ffmpegWavArgs(
+  media: ResolvedMedia,
+  outputPath: string,
+  range: TimeRange | null = null,
+): string[] {
+  const args = [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-nostdin",
+    "-y",
+    ...ffmpegHttpArgs(media.httpHeaders),
+  ];
+  if (range) args.push("-ss", range.startS.toFixed(3));
+  args.push("-i", media.url);
+  if (range) args.push("-t", (range.endS - range.startS).toFixed(3));
+  args.push(
+    "-map",
+    "0:a:0",
+    "-vn",
+    "-c:a",
+    "pcm_s16le",
+    "-progress",
+    "pipe:1",
+    "-nostats",
+    outputPath,
+  );
+  return args;
 }
 
 function isTransientDownloadFailure(stderr: string): boolean {
-  return /HTTP Error 403:\s*Forbidden/i.test(stderr);
+  return /(?:HTTP (?:Error|error)|Server returned)\s*403|403\s+Forbidden/i.test(
+    stderr,
+  );
 }
 
 function waitForRetry(ms: number, signal: AbortSignal): Promise<void> {
@@ -265,39 +210,9 @@ async function removeAttemptFiles(tempDir: string, base: string): Promise<void> 
   }
 }
 
-async function findDownloadedFile(
-  tempDir: string,
-  base: string,
-  stdout: string,
-): Promise<string> {
-  const printed = stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith(tempDir) || /\/ym-\d+-/.test(line))
-    .at(-1);
-
-  if (printed) {
-    try {
-      await fsp.access(printed);
-      return printed;
-    } catch {
-      /* fall through */
-    }
-  }
-
-  const files = await fsp.readdir(tempDir);
-  const match = files.find((file) => file.startsWith(base + "."));
-  if (!match) {
-    throw new DownloadError(
-      `Download finished but output file missing for ${base}`,
-    );
-  }
-  return path.join(tempDir, match);
-}
-
 /**
- * Download bestaudio (prefer m4a) with yt-dlp — no FFmpeg conversion.
- * Returns the absolute path to the downloaded file.
+ * Resolve the source stream and let FFmpeg download it directly into a
+ * Live-compatible PCM WAV. No compressed intermediate file is written.
  */
 export async function downloadAudio(
   ytDlpPath: string,
@@ -310,88 +225,108 @@ export async function downloadAudio(
   const forceFailureForTesting =
     options.forceFailureForTesting ?? FORCE_DOWNLOAD_FAILURE_FOR_TESTING;
   const range = normalizeTimeRange(options.range, candidate.durationS);
-  if (range && !forceFailureForTesting) {
-    if (!options.ffmpegPath) {
-      throw new Error("The managed audio trimmer is not ready.");
-    }
-    return downloadSelectedAudio(
-      options.ffmpegPath,
-      ytDlpPath,
-      candidate,
-      tempDir,
-      range,
-      onProgress,
-      signal,
-      options.mediaResolver,
-    );
+  const ffmpegPath = options.ffmpegPath;
+  if (!ffmpegPath) {
+    throw new Error("The managed audio converter is not ready.");
   }
 
-  const base = await uniqueBaseName(tempDir, audioBaseName(candidate));
+  const base = await uniqueBaseName(
+    tempDir,
+    audioBaseName(candidate, range ?? undefined),
+  );
+  const outputPath = path.join(tempDir, `${base}.wav`);
+  const resolver = options.mediaResolver ?? new MediaResolver(ytDlpPath);
+  const ownsResolver = !options.mediaResolver;
+  const processRunner = options.processRunner ?? runProcess;
 
-  for (let attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt += 1) {
-    const escapedBase = base.replace(/%/g, "%%");
-    const outTemplate = path.join(tempDir, `${escapedBase}.%(ext)s`);
-    const result = forceFailureForTesting
-      ? {
-          stdout: "",
-          stderr:
-            "ERROR: unable to download video data: HTTP Error 403: Forbidden (forced for retry-dialog testing)",
-          code: 1,
-        }
-      : await runProcess(
-          ytDlpPath,
-          [
-            candidate.url,
-            "-f",
-            "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best",
-            // `--print` suppresses default progress unless `--progress` is explicit.
-            "--progress",
-            "--newline",
-            "--no-playlist",
-            "--no-warning",
-            "--no-update",
-            "-o",
-            outTemplate,
-            "--print",
-            "after_move:filepath",
-          ],
-          signal,
-          (raw) => {
-            const line = raw.trim();
-            if (!line) return;
-            const pct = /\[download\]\s+([\d.]+)%/.exec(line);
-            if (pct?.[1]) {
-              const n = parseFloat(pct[1]);
-              const speed = /at\s+(\S+\/s)/.exec(line);
-              onProgress({ pct: n, speed: speed?.[1] ?? "" });
-            }
-          },
-        );
-
-    if (signal.aborted) throw new Error("aborted");
-    if (result.code === 0) {
-      return findDownloadedFile(tempDir, base, result.stdout);
-    }
-
-    await removeAttemptFiles(tempDir, base);
+  const prepareRetry = async (
+    detail: string,
+    attempt: number,
+  ): Promise<boolean> => {
     if (
-      attempt < MAX_DOWNLOAD_ATTEMPTS &&
-      isTransientDownloadFailure(result.stderr)
+      attempt >= MAX_DOWNLOAD_ATTEMPTS ||
+      !isTransientDownloadFailure(detail)
     ) {
-      options.onRetry?.({
-        attempt: attempt + 1,
-        maxAttempts: MAX_DOWNLOAD_ATTEMPTS,
-      });
-      if (!forceFailureForTesting) {
-        await waitForRetry(RETRY_DELAY_MS, signal);
+      return false;
+    }
+    resolver.invalidate(candidate, "download");
+    options.onRetry?.({
+      attempt: attempt + 1,
+      maxAttempts: MAX_DOWNLOAD_ATTEMPTS,
+    });
+    if (!forceFailureForTesting) {
+      await waitForRetry(RETRY_DELAY_MS, signal);
+    }
+    return true;
+  };
+
+  try {
+    for (let attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt += 1) {
+      let media: ResolvedMedia;
+      try {
+        media = await resolver.resolve(candidate, signal, "download");
+      } catch (error) {
+        if (signal.aborted) throw new Error("aborted");
+        const detail = error instanceof Error ? error.message : String(error);
+        if (await prepareRetry(detail, attempt)) continue;
+        throw error;
       }
-      continue;
+
+      if (signal.aborted) throw new Error("aborted");
+      const durationS = range
+        ? range.endS - range.startS
+        : (media.durationS ?? candidate.durationS);
+      const args = ffmpegWavArgs(media, outputPath, range);
+      let result;
+      try {
+        result = forceFailureForTesting
+          ? {
+              stdout: "",
+              stderr:
+                "HTTP error 403 Forbidden (forced for retry-dialog testing)",
+              code: 1,
+            }
+          : await processRunner(
+              ffmpegPath,
+              args,
+              signal,
+              (raw) => {
+                if (durationS == null || durationS <= 0) return;
+                const outTime = /^out_time_us=(\d+)$/.exec(raw.trim());
+                if (!outTime?.[1]) return;
+                const elapsedS = Number(outTime[1]) / 1_000_000;
+                const pct = Math.min(
+                  99,
+                  Math.max(0, Math.round((elapsedS / durationS) * 100)),
+                );
+                onProgress({ pct, speed: "" });
+              },
+            );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new Error(
+            "The managed audio converter could not be started. Try importing again.",
+          );
+        }
+        throw error;
+      }
+
+      if (signal.aborted) throw new Error("aborted");
+      if (result.code === 0) {
+        await fsp.access(outputPath);
+        onProgress({ pct: 100, speed: "" });
+        return outputPath;
+      }
+
+      await removeAttemptFiles(tempDir, base);
+      if (await prepareRetry(result.stderr, attempt)) continue;
+      throw new DownloadError(
+        `Audio download and conversion failed (FFmpeg exit ${result.code}).\n${result.stderr.slice(-800)}`,
+      );
     }
 
-    throw new DownloadError(
-      `Download failed (yt-dlp exit ${result.code}).\n${result.stderr.slice(-800)}`,
-    );
+    throw new DownloadError("Audio download and conversion failed after retrying.");
+  } finally {
+    if (ownsResolver) resolver.close();
   }
-
-  throw new DownloadError("Download failed after retrying.");
 }

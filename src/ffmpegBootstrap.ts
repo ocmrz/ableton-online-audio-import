@@ -43,7 +43,7 @@ export function ffmpegAssetForPlatform(
   const asset = ASSETS[`${platform}-${arch}`];
   if (!asset) {
     throw new Error(
-      `Automatic audio-trimmer setup is not available for ${platform}/${arch}.`,
+      `Automatic audio-converter setup is not available for ${platform}/${arch}.`,
     );
   }
   return asset;
@@ -165,7 +165,7 @@ const activeInstalls = new Map<string, Promise<string>>();
 
 /**
  * Ensure a verified FFmpeg binary exists under storageDir.
- * The pinned binary is downloaded only when a selected range needs trimming.
+ * The pinned binary is downloaded on the first import and reused afterward.
  */
 export function ensureFfmpeg(
   storageDir: string,
@@ -188,14 +188,14 @@ export function ensureFfmpeg(
     const asset = ffmpegAssetForPlatform();
     const partialPath = `${paths.binPath}.partial`;
     await fsp.rm(partialPath, { force: true });
-    opts?.onStatus?.("Downloading audio trimmer…", 0);
+    opts?.onStatus?.("Downloading audio converter…", 0);
 
     try {
       await downloadVerifiedFile(
         `${RELEASE_BASE}/${asset.asset}`,
         partialPath,
         asset.sha256,
-        (pct) => opts?.onStatus?.("Downloading audio trimmer…", pct),
+        (pct) => opts?.onStatus?.("Downloading audio converter…", pct),
         opts?.signal,
       );
       if (opts?.signal?.aborted) throw new Error("aborted");
@@ -205,7 +205,7 @@ export function ensureFfmpeg(
       await fsp.rename(partialPath, paths.binPath);
       await fsp.writeFile(paths.versionPath, FFMPEG_RELEASE, "utf8");
       await fsp.writeFile(paths.noticePath, ffmpegNotice(asset), "utf8");
-      opts?.onStatus?.("Audio trimmer ready", 100);
+      opts?.onStatus?.("Audio converter ready", 100);
       return paths.binPath;
     } finally {
       await fsp.rm(partialPath, { force: true }).catch(() => {});

@@ -12,7 +12,6 @@ import * as fsp from "node:fs/promises";
 import {
   DownloadError,
   downloadAudio,
-  normalizeTimeRange,
   type DownloadAudioOptions,
 } from "./download.js";
 import { ensureFfmpeg } from "./ffmpegBootstrap.js";
@@ -224,17 +223,30 @@ export function activate(activation: ActivationContext) {
     await fsp.mkdir(tempDir, { recursive: true });
 
     let ytDlpPath = "";
+    let ffmpegPath = "";
     try {
       await context.ui.withinProgressDialog(
         "Preparing…",
         { progress: 0 },
         async (update, signal) => {
+          await update("Preparing downloader…", 0);
           ytDlpPath = await ensureYtDlp(storageDir, {
             signal,
             onStatus: (message, pct) => {
-              void update(message, pct ?? 0);
+              void update(message, Math.round((pct ?? 0) * 0.45));
             },
           });
+          if (signal.aborted) throw new Error("aborted");
+
+          await update("Preparing audio converter…", 45);
+          ffmpegPath = await ensureFfmpeg(storageDir, {
+            signal,
+            onStatus: (message, pct) => {
+              void update(message, Math.round(45 + (pct ?? 0) * 0.55));
+            },
+          });
+          if (signal.aborted) throw new Error("aborted");
+          await update("Audio tools ready", 100);
         },
       );
     } catch (err) {
@@ -243,8 +255,8 @@ export function activate(activation: ActivationContext) {
       await showError(
         context,
         errorHtml(
-          "Downloader setup failed",
-          "Could not download yt-dlp automatically. Check your network and try again.<br/><br/>" +
+          "Audio tools setup failed",
+          "Could not prepare yt-dlp and FFmpeg automatically. Check your network and try again.<br/><br/>" +
             msg.replace(/\n/g, "<br/>"),
         ),
         480,
@@ -279,11 +291,6 @@ export function activate(activation: ActivationContext) {
     const chosen = pick.candidate;
 
     try {
-      const selectedRange = normalizeTimeRange(
-        pick.range ?? undefined,
-        chosen.durationS,
-      );
-      let ffmpegPath: string | undefined;
       for (;;) {
         try {
           await context.ui.withinProgressDialog(
@@ -291,112 +298,83 @@ export function activate(activation: ActivationContext) {
             { progress: 0 },
             async (update, signal) => {
               try {
-              const preparationStartPct = selectedRange ? 50 : 5;
-              if (selectedRange && !ffmpegPath) {
-                await update("Preparing audio trimmer…", 5);
-                try {
-                  ffmpegPath = await ensureFfmpeg(storageDir, {
-                    signal,
-                    onStatus: (message, pct) => {
-                      void update(
-                        message,
-                        Math.round(5 + (pct ?? 0) * 0.45),
-                      );
-                    },
-                  });
-                } catch (error) {
-                  if (signal.aborted) return;
-                  const message =
-                    error instanceof Error ? error.message : String(error);
-                  throw new Error(
-                    `Could not download the audio trimmer automatically. Check your network and try again.\n${message}`,
-                  );
+                await update("Preparing…", 5);
+                let latestPct = 5;
+                let latestLabel = "Downloading and converting…";
+                let preparationLabel = "Preparing…";
+                let progressEvents = 0;
+                let downloadDone = false;
+                const startedAt = Date.now();
+                const downloadOptions: DownloadAudioOptions = {
+                  ffmpegPath,
+                  mediaResolver,
+                  onRetry: () => {
+                    preparationLabel = "Retrying download…";
+                    latestLabel = preparationLabel;
+                  },
+                };
+                if (pick.range) downloadOptions.range = pick.range;
+
+                const downloadPromise = downloadAudio(
+                  ytDlpPath,
+                  chosen,
+                  tempDir,
+                  (p) => {
+                    progressEvents += 1;
+                    // Map FFmpeg 0–100 into conversion phase 55–85.
+                    const uiPct = Math.min(
+                      85,
+                      Math.max(55, Math.round(55 + p.pct * 0.3)),
+                    );
+                    if (uiPct > latestPct) latestPct = uiPct;
+                    latestLabel = p.speed
+                      ? `Downloading and converting… ${p.speed}`
+                      : "Downloading and converting…";
+                  },
+                  signal,
+                  downloadOptions,
+                ).finally(() => {
+                  downloadDone = true;
+                });
+
+                // Source resolution can be silent, so paint preparation
+                // progress until FFmpeg starts reporting converted time.
+                while (!downloadDone) {
+                  const elapsed = Date.now() - startedAt;
+                  let label: string;
+                  let pct: number;
+                  if (progressEvents === 0) {
+                    label = preparationLabel;
+                    pct = Math.min(
+                      55,
+                      Math.round(5 + 50 * (1 - Math.exp(-elapsed / 10_000))),
+                    );
+                  } else {
+                    label = latestLabel;
+                    pct = latestPct;
+                  }
+                  await update(label, pct);
+                  await Promise.race([
+                    downloadPromise.catch(() => undefined),
+                    new Promise<void>((r) => setTimeout(r, 150)),
+                  ]);
                 }
-              }
 
-              await update("Preparing…", preparationStartPct);
-              let latestPct = preparationStartPct;
-              let latestLabel = "Downloading…";
-              let preparationLabel = "Preparing…";
-              let progressEvents = 0;
-              let downloadDone = false;
-              const startedAt = Date.now();
-              const downloadOptions: DownloadAudioOptions = {
-                mediaResolver,
-                onRetry: () => {
-                  preparationLabel = "Retrying download…";
-                  latestLabel = preparationLabel;
-                },
-              };
-              if (selectedRange && ffmpegPath) {
-                downloadOptions.range = selectedRange;
-                downloadOptions.ffmpegPath = ffmpegPath;
-              }
+                const audioPath = await downloadPromise;
+                if (signal.aborted) return;
 
-              const downloadPromise = downloadAudio(
-                ytDlpPath,
-                chosen,
-                tempDir,
-                (p) => {
-                  progressEvents += 1;
-                  // Map yt-dlp 0–100 into download phase 55–85 (prep used 5–55).
-                  const uiPct = Math.min(
-                    85,
-                    Math.max(55, Math.round(55 + p.pct * 0.3)),
-                  );
-                  if (uiPct > latestPct) latestPct = uiPct;
-                  latestLabel = p.speed
-                    ? `Downloading… ${p.speed}`
-                    : "Downloading…";
-                },
-                signal,
-                downloadOptions,
-              ).finally(() => {
-                downloadDone = true;
-              });
+                await update(latestLabel, Math.max(latestPct, 85));
 
-              // yt-dlp is silent for ~10s while resolving, then the file often
-              // finishes in <1s — so paint prep progress on this await path.
-              while (!downloadDone) {
-                const elapsed = Date.now() - startedAt;
-                let label: string;
-                let pct: number;
-                if (progressEvents === 0) {
-                  label = preparationLabel;
-                  pct = Math.min(
-                    55,
-                    Math.round(
-                      preparationStartPct +
-                        (55 - preparationStartPct) *
-                          (1 - Math.exp(-elapsed / 10_000)),
-                    ),
-                  );
-                } else {
-                  label = latestLabel;
-                  pct = latestPct;
-                }
-                await update(label, pct);
-                await Promise.race([
-                  downloadPromise.catch(() => undefined),
-                  new Promise<void>((r) => setTimeout(r, 150)),
-                ]);
-              }
+                await update("Importing into project…", 92);
+                const imported =
+                  await context.resources.importIntoProject(audioPath);
+                if (signal.aborted) return;
 
-              const audioPath = await downloadPromise;
-              if (signal.aborted) return;
+                await update("Creating clip…", 98);
+                const clip = await placement(imported);
+                clip.name = displayName(chosen);
 
-              await update(latestLabel, Math.max(latestPct, 85));
-
-              await update("Importing into project…", 92);
-              const imported =
-                await context.resources.importIntoProject(audioPath);
-              if (signal.aborted) return;
-
-              await update("Creating clip…", 98);
-              const clip = await placement(imported);
-              clip.name = displayName(chosen);
-
-              await update("Done", 100);
+                await update("Done", 100);
               } catch (err) {
                 if (signal.aborted) return;
                 throw err;
@@ -409,7 +387,7 @@ export function activate(activation: ActivationContext) {
           if (err instanceof DownloadError) {
             const retry = await showRetry(
               context,
-            "Online Audio could not finish the download after retrying. Would you like to try again?",
+              "Online Audio could not finish downloading and converting the audio after retrying. Would you like to try again?",
             );
             if (retry) continue;
             return;

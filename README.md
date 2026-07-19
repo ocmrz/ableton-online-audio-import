@@ -42,9 +42,9 @@ Packaged extensions do not appear while Developer Mode is active.
 
 - Ableton Live 12.4.5 public beta with Extensions
 
-On the first import, the extension downloads a managed `yt-dlp` binary into Live's extension storage (about 35 MB). The first selected-range import also downloads a verified FFmpeg binary (about 34-53 MB, depending on the platform). Both are automatic.
+On the first import, the extension downloads managed `yt-dlp` and verified FFmpeg binaries into Live's extension storage (about 69-88 MB combined, depending on the platform). Both downloads are automatic.
 
-The extension checks `yt-dlp` for updates about once a day. Its pinned FFmpeg version updates with the extension.
+The extension checks `yt-dlp` for updates about once a day; its pinned FFmpeg version updates with the extension.
 
 ## Use audio responsibly
 
