@@ -2,7 +2,7 @@
 
 **Find and import online audio without leaving Ableton Live.**
 
-Online Audio searches YouTube, YouTube Music, and SoundCloud inside Ableton Live. Review the title, artist, source, and duration, then import your pick directly into a clip slot or Arrangement track.
+Online Audio searches YouTube, YouTube Music, and SoundCloud inside Ableton Live. Preview and trim a result, then import the full track or selected range into a clip slot or Arrangement track.
 
 <p align="center">
   <a href="../../releases/latest/download/Online-Audio.ablx"><strong>Download extension (.ablx)</strong></a>
@@ -23,7 +23,9 @@ Online Audio searches YouTube, YouTube Music, and SoundCloud inside Ableton Live
 1. Right-click a clip slot, an Arrangement selection, or an audio track.
 2. Choose **Extensions → Online Audio: Import…**
 3. Search for a song or paste a YouTube, YouTube Music, or SoundCloud URL.
-4. Pick a result, then select **Import** or press <kbd>Return</kbd>. Online Audio places it in your set.
+4. Pick a result to preview it.
+5. (Optional) Drag the timeline's **Start** and **End** handles to select a range.
+6. Click **Import**. The selected audio would be placed in your set.
 
 ## Install
 
@@ -39,6 +41,7 @@ Packaged extensions do not appear while Developer Mode is active.
 ## Requirements
 
 - Ableton Live 12.4.5 public beta with Extensions
+- FFmpeg on your `PATH` for importing selected ranges
 
 On the first import, Online Audio downloads a managed `yt-dlp` binary into Live's extension storage (about 35 MB). It checks for updates about once a day.
 
