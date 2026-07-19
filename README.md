@@ -11,13 +11,13 @@ Online Audio searches YouTube, YouTube Music, and SoundCloud inside Ableton Live
 > Requires **Ableton Live 12.4.5 public beta** with Extensions.
 
 <p align="center">
-  <img src="docs/images/online-audio-search.jpg" alt="Online Audio search results in Ableton Live" width="100%">
+  <img src="docs/images/og-image.jpg" alt="Online Audio search results in Ableton Live" width="100%">
 </p>
 
 ## How to use
 
 <p align="left">
-  <img src="docs/images/og-image.jpg" alt="Ableton Live context menu showing Extensions and Online Audio: Import" width="440">
+  <img src="docs/images/online-audio-menu.png" alt="Ableton Live context menu showing Extensions and Online Audio: Import" width="440">
 </p>
 
 1. Right-click a clip slot, an Arrangement selection, or an audio track.
