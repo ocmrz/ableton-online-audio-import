@@ -8,6 +8,7 @@ import {
   audioBaseName,
   downloadAudio,
   formatFileTime,
+  normalizeTimeRange,
 } from "./download.js";
 import type { Candidate } from "./types.js";
 
@@ -30,6 +31,17 @@ test("audioBaseName creates portable human-readable names", () => {
   assert.equal(
     audioBaseName(candidate, { startS: 70.2, endS: 102.4 }),
     "Daft Punk - Get Lucky Remix [01m10s-01m42s]",
+  );
+});
+
+test("normalizeTimeRange skips a full-track selection", () => {
+  assert.equal(
+    normalizeTimeRange({ startS: 0, endS: 240 }, 240),
+    null,
+  );
+  assert.deepEqual(
+    normalizeTimeRange({ startS: 12.5, endS: 48.25 }, 240),
+    { startS: 12.5, endS: 48.25 },
   );
 });
 

@@ -41,9 +41,10 @@ Packaged extensions do not appear while Developer Mode is active.
 ## Requirements
 
 - Ableton Live 12.4.5 public beta with Extensions
-- FFmpeg on your `PATH` for importing selected ranges
 
-On the first import, Online Audio downloads a managed `yt-dlp` binary into Live's extension storage (about 35 MB). It checks for updates about once a day.
+On the first import, the extension downloads a managed `yt-dlp` binary into Live's extension storage (about 35 MB). The first selected-range import also downloads a verified FFmpeg binary (about 34-53 MB, depending on the platform). Both are automatic.
+
+The extension checks `yt-dlp` for updates about once a day. Its pinned FFmpeg version updates with the extension.
 
 ## Use audio responsibly
 
@@ -83,3 +84,5 @@ Attach the build to a GitHub Release with the asset name `Online-Audio.ablx`. Th
 ## Open source
 
 The source code is available under the [MIT License](LICENSE).
+
+Managed [FFmpeg](https://ffmpeg.org/) binaries come from [Shaka Project's reproducible builds](https://github.com/shaka-project/static-ffmpeg-binaries) and are licensed separately under the GPL. Their version, checksum, source, and license information are saved beside the downloaded binary.

@@ -12,8 +12,10 @@ import * as fsp from "node:fs/promises";
 import {
   DownloadError,
   downloadAudio,
+  normalizeTimeRange,
   type DownloadAudioOptions,
 } from "./download.js";
+import { ensureFfmpeg } from "./ffmpegBootstrap.js";
 import { MediaResolver } from "./media.js";
 import type { Candidate, MediaSource, TimeRange } from "./types.js";
 import { displayName } from "./types.js";
@@ -277,6 +279,11 @@ export function activate(activation: ActivationContext) {
     const chosen = pick.candidate;
 
     try {
+      const selectedRange = normalizeTimeRange(
+        pick.range ?? undefined,
+        chosen.durationS,
+      );
+      let ffmpegPath: string | undefined;
       for (;;) {
         try {
           await context.ui.withinProgressDialog(
@@ -284,8 +291,31 @@ export function activate(activation: ActivationContext) {
             { progress: 0 },
             async (update, signal) => {
               try {
-              await update("Preparing…", 5);
-              let latestPct = 5;
+              const preparationStartPct = selectedRange ? 50 : 5;
+              if (selectedRange && !ffmpegPath) {
+                await update("Preparing audio trimmer…", 5);
+                try {
+                  ffmpegPath = await ensureFfmpeg(storageDir, {
+                    signal,
+                    onStatus: (message, pct) => {
+                      void update(
+                        message,
+                        Math.round(5 + (pct ?? 0) * 0.45),
+                      );
+                    },
+                  });
+                } catch (error) {
+                  if (signal.aborted) return;
+                  const message =
+                    error instanceof Error ? error.message : String(error);
+                  throw new Error(
+                    `Could not download the audio trimmer automatically. Check your network and try again.\n${message}`,
+                  );
+                }
+              }
+
+              await update("Preparing…", preparationStartPct);
+              let latestPct = preparationStartPct;
               let latestLabel = "Downloading…";
               let preparationLabel = "Preparing…";
               let progressEvents = 0;
@@ -298,7 +328,10 @@ export function activate(activation: ActivationContext) {
                   latestLabel = preparationLabel;
                 },
               };
-              if (pick.range) downloadOptions.range = pick.range;
+              if (selectedRange && ffmpegPath) {
+                downloadOptions.range = selectedRange;
+                downloadOptions.ffmpegPath = ffmpegPath;
+              }
 
               const downloadPromise = downloadAudio(
                 ytDlpPath,
@@ -332,7 +365,11 @@ export function activate(activation: ActivationContext) {
                   label = preparationLabel;
                   pct = Math.min(
                     55,
-                    Math.round(5 + 50 * (1 - Math.exp(-elapsed / 10_000))),
+                    Math.round(
+                      preparationStartPct +
+                        (55 - preparationStartPct) *
+                          (1 - Math.exp(-elapsed / 10_000)),
+                    ),
                   );
                 } else {
                   label = latestLabel;

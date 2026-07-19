@@ -22,6 +22,7 @@ export interface DownloadRetry {
 
 export interface DownloadAudioOptions {
   range?: TimeRange;
+  ffmpegPath?: string;
   mediaResolver?: MediaResolver;
   onRetry?: (retry: DownloadRetry) => void;
   forceFailureForTesting?: boolean;
@@ -96,7 +97,7 @@ async function uniqueBaseName(
   }
 }
 
-function normalizedRange(
+export function normalizeTimeRange(
   range: TimeRange | undefined,
   durationS: number | null,
 ): TimeRange | null {
@@ -146,6 +147,7 @@ function ffmpegHttpArgs(headers: Record<string, string>): string[] {
 }
 
 async function downloadSelectedAudio(
+  ffmpegPath: string,
   ytDlpPath: string,
   candidate: Candidate,
   tempDir: string,
@@ -195,7 +197,7 @@ async function downloadSelectedAudio(
 
     let result;
     try {
-      result = await runProcess("ffmpeg", args, signal, (raw) => {
+      result = await runProcess(ffmpegPath, args, signal, (raw) => {
         const outTime = /^out_time_us=(\d+)$/.exec(raw.trim());
         if (!outTime?.[1]) return;
         const elapsedS = Number(outTime[1]) / 1_000_000;
@@ -208,7 +210,7 @@ async function downloadSelectedAudio(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         throw new Error(
-          "Importing a selected range requires FFmpeg. Install FFmpeg and try again.",
+          "The managed audio trimmer could not be started. Try importing again.",
         );
       }
       throw error;
@@ -307,9 +309,13 @@ export async function downloadAudio(
 ): Promise<string> {
   const forceFailureForTesting =
     options.forceFailureForTesting ?? FORCE_DOWNLOAD_FAILURE_FOR_TESTING;
-  const range = normalizedRange(options.range, candidate.durationS);
+  const range = normalizeTimeRange(options.range, candidate.durationS);
   if (range && !forceFailureForTesting) {
+    if (!options.ffmpegPath) {
+      throw new Error("The managed audio trimmer is not ready.");
+    }
     return downloadSelectedAudio(
+      options.ffmpegPath,
       ytDlpPath,
       candidate,
       tempDir,
