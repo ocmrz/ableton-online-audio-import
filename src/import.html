@@ -933,6 +933,7 @@
 
       function seekPreview(time) {
         var safe = constrainPreviewTime(time);
+        var wasPaused = previewIsPaused();
         providerCurrentTime = safe;
         stoppedAtRangeEnd = false;
         if (previewProvider === "youtube") {
@@ -947,6 +948,7 @@
           var audio = document.getElementById("previewAudio");
           if (audio && previewReady) audio.currentTime = safe;
         }
+        if (wasPaused) lastStoppedPreviewTime = safe;
         updatePlaybackUi();
       }
 
