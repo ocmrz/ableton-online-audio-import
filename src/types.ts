@@ -1,5 +1,5 @@
 /** One search / URL result that could be imported into Live. */
-export type MediaSource = "youtube" | "soundcloud";
+export type MediaSource = "youtube" | "soundcloud" | "bbc";
 
 export interface Candidate {
   id: string;

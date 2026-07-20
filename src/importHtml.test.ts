@@ -102,3 +102,47 @@ test("age-restricted YouTube previews become actionable warnings", async () => {
     "This audio is age-restricted. Please choose another result.",
   );
 });
+
+test("source and type filters are combined by intersection", async () => {
+  const script = await readInlineScript();
+  const context = vm.createContext({
+    document: {
+      title: "",
+      addEventListener() {},
+    },
+    window: {},
+  });
+  new vm.Script(script, { filename: "import.html" }).runInContext(context);
+
+  const result = vm.runInContext(
+    `
+      (() => {
+        ranked = [
+          {
+            brand: "youtube",
+            type: "song",
+            candidate: { id: "song", source: "youtube" },
+          },
+          {
+            brand: "bbc",
+            type: "sound-effect",
+            candidate: { id: "effect", source: "bbc" },
+          },
+        ];
+        filters["sound-effect"] = true;
+        var soundEffects = filtered().map(function (item) {
+          return item.candidate.id;
+        });
+        filters.youtube = true;
+        var youtubeSoundEffects = filtered().map(function (item) {
+          return item.candidate.id;
+        });
+        return { soundEffects: soundEffects, youtubeSoundEffects: youtubeSoundEffects };
+      })()
+    `,
+    context,
+  ) as { soundEffects: string[]; youtubeSoundEffects: string[] };
+
+  assert.deepEqual(Array.from(result.soundEffects), ["effect"]);
+  assert.deepEqual(Array.from(result.youtubeSoundEffects), []);
+});

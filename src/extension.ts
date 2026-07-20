@@ -26,6 +26,7 @@ import importHtml from "./import.html";
 import logoYoutube from "../assets/youtube.png";
 import logoYoutubeMusic from "../assets/youtube-music.png";
 import logoSoundcloud from "../assets/soundcloud.png";
+import logoBbc from "../assets/bbc.png";
 
 let liveFontCss = "";
 
@@ -33,7 +34,8 @@ function withLogos(html: string): string {
   const out = html
     .replaceAll("__LOGO_YOUTUBE__", logoYoutube)
     .replaceAll("__LOGO_YOUTUBE_MUSIC__", logoYoutubeMusic)
-    .replaceAll("__LOGO_SOUNDCLOUD__", logoSoundcloud);
+    .replaceAll("__LOGO_SOUNDCLOUD__", logoSoundcloud)
+    .replaceAll("__LOGO_BBC__", logoBbc);
   return out;
 }
 function requireDir(dir: string | undefined, name: string): string {
@@ -153,7 +155,13 @@ function parseImportPick(raw: string): ImportPick | null {
     if (!c || typeof c !== "object") return null;
     const o = c as Record<string, unknown>;
     const source = o.source;
-    if (source !== "youtube" && source !== "soundcloud") return null;
+    if (
+      source !== "youtube" &&
+      source !== "soundcloud" &&
+      source !== "bbc"
+    ) {
+      return null;
+    }
     if (typeof o.id !== "string" || typeof o.url !== "string") return null;
     if (typeof o.title !== "string") return null;
     const candidate: Candidate = {

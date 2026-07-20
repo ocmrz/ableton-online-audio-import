@@ -8,6 +8,8 @@ import { runProcess } from "./process.js";
 const SEARCH_LIMIT = 5;
 const SEARCH_TIMEOUT_MS = 12_000;
 const SEP = "\t";
+const BBC_SEARCH_URL =
+  "https://sound-effects-api.bbcrewind.co.uk/api/sfx/search";
 
 const PRINT_FMT = [
   "%(id)s",
@@ -704,15 +706,110 @@ export async function searchSoundCloud(
   return withDeadline(work, SEARCH_TIMEOUT_MS + 2_000, [], opts?.signal);
 }
 
+interface BbcSoundEffect {
+  id?: string;
+  description?: string;
+  duration?: number;
+  categories?: Array<{ className?: string }>;
+  technicalMetadata?: { duration?: string };
+}
+
+function bbcDurationS(effect: BbcSoundEffect): number | null {
+  const technicalDuration = Number(effect.technicalMetadata?.duration);
+  if (Number.isFinite(technicalDuration) && technicalDuration > 0) {
+    return technicalDuration;
+  }
+  if (
+    typeof effect.duration === "number" &&
+    Number.isFinite(effect.duration) &&
+    effect.duration > 0
+  ) {
+    return effect.duration / 1000;
+  }
+  return null;
+}
+
+/**
+ * Search BBC Sound Effects through the same unauthenticated JSON endpoint used
+ * by its website. This is not a documented public API, so failures are isolated
+ * from the other providers.
+ */
+export async function searchBbc(
+  query: string,
+  signal?: AbortSignal,
+): Promise<Candidate[]> {
+  const work = (async () => {
+    throwIfAborted(signal);
+    const ctrl = new AbortController();
+    const onOuter = () => ctrl.abort();
+    signal?.addEventListener("abort", onOuter, { once: true });
+    const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
+    try {
+      const criteria = {
+        from: 0,
+        size: SEARCH_LIMIT,
+        query,
+        tags: null,
+        categories: null,
+        durations: null,
+        continents: null,
+        sortBy: null,
+        source: null,
+        recordist: null,
+        habitat: null,
+      };
+      const res = await fetch(BBC_SEARCH_URL, {
+        method: "POST",
+        signal: ctrl.signal,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ criteria }),
+      });
+      if (!res.ok) throw new Error(`BBC search HTTP ${res.status}`);
+      const data = (await res.json()) as { results?: BbcSoundEffect[] };
+      const candidates: Candidate[] = [];
+      for (const effect of data.results ?? []) {
+        if (candidates.length >= SEARCH_LIMIT) break;
+        const id = effect.id?.trim();
+        const title = effect.description?.trim();
+        if (!id || !/^[a-zA-Z0-9_-]+$/.test(id) || !title) continue;
+        candidates.push({
+          id,
+          url: `https://sound-effects.bbcrewind.co.uk/search?q=${encodeURIComponent(id)}`,
+          title,
+          artists: [],
+          album: effect.categories?.[0]?.className ?? null,
+          durationS: bbcDurationS(effect),
+          source: "bbc",
+          channel: "BBC Sound Effects",
+          searchRank: candidates.length,
+        });
+      }
+      return candidates;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onOuter);
+    }
+  })().catch((err: unknown) => {
+    console.error("[search bbc]", err);
+    return [] as Candidate[];
+  });
+
+  return withDeadline(work, SEARCH_TIMEOUT_MS + 2_000, [], signal);
+}
+
 /** Prefer YouTube Music ids when the same video appears in regular YouTube too. */
 export function mergeSearchResults(
   youtubeMusic: Candidate[],
   youtube: Candidate[],
   soundcloud: Candidate[],
+  bbc: Candidate[] = [],
 ): Candidate[] {
   const seen = new Set<string>();
   const out: Candidate[] = [];
-  for (const c of [...youtubeMusic, ...youtube, ...soundcloud]) {
+  for (const c of [...youtubeMusic, ...youtube, ...soundcloud, ...bbc]) {
     const key = `${c.source}:${c.id}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -731,7 +828,8 @@ export async function searchBoth(
     searchYouTubeMusic(query, opts?.signal),
     searchYouTube(ytDlpPath, query, opts?.signal),
     searchSoundCloud(query, opts),
-  ]).then(([ytm, yt, sc]) => mergeSearchResults(ytm, yt, sc));
+    searchBbc(query, opts?.signal),
+  ]).then(([ytm, yt, sc, bbc]) => mergeSearchResults(ytm, yt, sc, bbc));
 
   // Cancel must settle the progress dialog even if fetch ignores AbortSignal.
   return settleOnAbort(work, opts?.signal, () => {

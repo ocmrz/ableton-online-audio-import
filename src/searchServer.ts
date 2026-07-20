@@ -10,6 +10,7 @@ import { rankCandidates } from "./rank.js";
 import {
   mergeSearchResults,
   resolveUrl,
+  searchBbc,
   searchSoundCloud,
   searchYouTube,
   searchYouTubeMusic,
@@ -17,7 +18,7 @@ import {
 import type { Candidate } from "./types.js";
 import { artistStr } from "./types.js";
 
-export type Brand = "youtube" | "youtube-music" | "soundcloud";
+export type Brand = "youtube" | "youtube-music" | "soundcloud" | "bbc";
 
 export interface SearchServer {
   port: number;
@@ -47,7 +48,11 @@ function candidateFromValue(value: unknown): Candidate {
   }
   const raw = value as Record<string, unknown>;
   const source = raw.source;
-  if (source !== "youtube" && source !== "soundcloud") {
+  if (
+    source !== "youtube" &&
+    source !== "soundcloud" &&
+    source !== "bbc"
+  ) {
     throw new Error("Unsupported preview source.");
   }
   if (
@@ -71,7 +76,9 @@ function candidateFromValue(value: unknown): Candidate {
         host === "m.youtube.com" ||
         host === "music.youtube.com" ||
         host === "youtu.be"
-      : host === "soundcloud.com" || host.endsWith(".soundcloud.com");
+      : source === "soundcloud"
+        ? host === "soundcloud.com" || host.endsWith(".soundcloud.com")
+        : host === "sound-effects.bbcrewind.co.uk";
   if (!validHost || sourceUrl.protocol !== "https:") {
     throw new Error("Unsupported preview URL.");
   }
@@ -91,11 +98,11 @@ function candidateFromValue(value: unknown): Candidate {
   };
 }
 
-function upstreamHeaders(
+export function upstreamHeaders(
   media: ResolvedMedia,
   range: string | undefined,
-): Headers {
-  const headers = new Headers();
+): Record<string, string> {
+  const headers: Record<string, string> = {};
   const blocked = new Set([
     "accept-encoding",
     "connection",
@@ -104,10 +111,10 @@ function upstreamHeaders(
     "range",
   ]);
   for (const [name, value] of Object.entries(media.httpHeaders)) {
-    if (!blocked.has(name.toLowerCase())) headers.set(name, value);
+    if (!blocked.has(name.toLowerCase())) headers[name] = value;
   }
-  headers.set("Accept-Encoding", "identity");
-  if (range) headers.set("Range", range);
+  headers["Accept-Encoding"] = "identity";
+  if (range) headers.Range = range;
   return headers;
 }
 
@@ -166,6 +173,7 @@ async function proxyMedia(
 }
 
 export function brandFor(c: Candidate): Brand {
+  if (c.source === "bbc") return "bbc";
   if (c.source === "soundcloud") return "soundcloud";
   if (
     c.url.includes("music.youtube.com") ||
@@ -183,6 +191,7 @@ function toItem(c: Candidate, score: number | null, notes: string) {
     subtitle: artistStr(c) || c.channel || c.source,
     source: c.source,
     brand: brandFor(c),
+    type: c.source === "bbc" ? "sound-effect" : "song",
     durationS: c.durationS,
     score,
     notes,
@@ -243,7 +252,7 @@ export async function startSearchServer(opts: {
         }
 
         const rankedQuery = detected.query;
-        const [ytm, yt, sc] = await Promise.all([
+        const [ytm, yt, sc, bbc] = await Promise.all([
           searchYouTubeMusic(rankedQuery).catch(() => [] as Candidate[]),
           searchYouTube(opts.ytDlpPath, rankedQuery).catch(
             () => [] as Candidate[],
@@ -251,9 +260,10 @@ export async function startSearchServer(opts: {
           searchSoundCloud(rankedQuery, {
             storageDir: opts.storageDir,
           }).catch(() => [] as Candidate[]),
+          searchBbc(rankedQuery).catch(() => [] as Candidate[]),
         ]);
         const ranked = rankCandidates(
-          mergeSearchResults(ytm, yt, sc),
+          mergeSearchResults(ytm, yt, sc, bbc),
           rankedQuery,
         );
         const items = ranked.map((s) =>

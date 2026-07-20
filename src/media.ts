@@ -14,6 +14,7 @@ const DIRECT_AUDIO_FORMAT = [
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 8;
+const BBC_MEDIA_BASE_URL = "https://sound-effects-media.bbcrewind.co.uk";
 const YOUTUBE_PLAYER_URL =
   "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
 const IOS_USER_AGENT =
@@ -123,6 +124,22 @@ function parseDuration(raw: string | undefined): number | null {
   if (!raw || raw === "NA" || raw === "None") return null;
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function resolveBbcDirect(
+  candidate: Candidate,
+  profile: MediaProfile,
+): ResolvedMedia {
+  if (!/^[a-zA-Z0-9_-]+$/.test(candidate.id)) {
+    throw new Error("Invalid BBC Sound Effects id.");
+  }
+  const ext = profile === "preview" ? "mp3" : "wav";
+  return {
+    url: `${BBC_MEDIA_BASE_URL}/${ext}/${candidate.id}.${ext}`,
+    ext,
+    durationS: candidate.durationS,
+    httpHeaders: {},
+  };
 }
 
 function parseHeaders(raw: string | undefined): Record<string, string> {
@@ -393,6 +410,10 @@ export class MediaResolver {
     signal: AbortSignal,
     profile: MediaProfile,
   ): Promise<ResolvedMedia> {
+    if (candidate.source === "bbc") {
+      return resolveBbcDirect(candidate, profile);
+    }
+
     if (candidate.source === "youtube") {
       try {
         return await resolveYoutubeDirect(candidate, signal, profile);

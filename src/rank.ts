@@ -43,20 +43,22 @@ export function scoreCandidate(c: Candidate, query: string): ScoredCandidate {
   const notes: string[] = [];
   let score = 0;
 
-  const variantText = `${c.title} ${c.album ?? ""}`;
-  for (const keyword of VARIANT_KEYWORDS) {
-    if (hasWord(variantText, keyword) && !hasWord(query, keyword)) {
-      score += W_VARIANT;
-      notes.push(`variant "${keyword}"`);
+  if (c.source !== "bbc") {
+    const variantText = `${c.title} ${c.album ?? ""}`;
+    for (const keyword of VARIANT_KEYWORDS) {
+      if (hasWord(variantText, keyword) && !hasWord(query, keyword)) {
+        score += W_VARIANT;
+        notes.push(`variant "${keyword}"`);
+      }
     }
-  }
 
-  if (
-    c.durationS !== null &&
-    !(MIN_DURATION_S <= c.durationS && c.durationS <= MAX_DURATION_S)
-  ) {
-    score += W_DURATION;
-    notes.push(`odd duration (${c.durationS}s)`);
+    if (
+      c.durationS !== null &&
+      !(MIN_DURATION_S <= c.durationS && c.durationS <= MAX_DURATION_S)
+    ) {
+      score += W_DURATION;
+      notes.push(`odd duration (${c.durationS}s)`);
+    }
   }
 
   const queryWords = new Set(norm(query).split(/\s+/).filter(Boolean));

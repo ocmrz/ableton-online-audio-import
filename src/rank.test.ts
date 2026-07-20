@@ -130,4 +130,19 @@ describe("rankCandidates", () => {
     const ranked = rankCandidates([yt, sc], "wonderwall oasis");
     assert.equal(ranked[0]?.candidate.id, "sc");
   });
+
+  it("does not apply song-specific penalties to BBC sound effects", () => {
+    const scored = scoreCandidate(
+      make({
+        id: "bbc",
+        title: "Door loop",
+        artists: [],
+        album: "Daily Life",
+        durationS: 10,
+        source: "bbc",
+      }),
+      "door",
+    );
+    assert.deepEqual(scored.notes, []);
+  });
 });
