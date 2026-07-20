@@ -120,8 +120,26 @@ test("source and type filters are combined by intersection", async () => {
         ranked = [
           {
             brand: "youtube",
-            type: "song",
-            candidate: { id: "song", source: "youtube" },
+            type: "music",
+            candidate: { id: "track", source: "youtube" },
+          },
+          {
+            brand: "archive",
+            type: "music",
+            candidate: {
+              id: "concert",
+              source: "archive",
+              kind: "music",
+            },
+          },
+          {
+            brand: "archive",
+            type: "sound-effect",
+            candidate: {
+              id: "field",
+              source: "archive",
+              kind: "sound-effect",
+            },
           },
           {
             brand: "bbc",
@@ -129,6 +147,9 @@ test("source and type filters are combined by intersection", async () => {
             candidate: { id: "effect", source: "bbc" },
           },
         ];
+        var defaultIds = filtered().map(function (item) {
+          return item.candidate.id;
+        });
         filters["sound-effect"] = true;
         var soundEffects = filtered().map(function (item) {
           return item.candidate.id;
@@ -137,12 +158,39 @@ test("source and type filters are combined by intersection", async () => {
         var youtubeSoundEffects = filtered().map(function (item) {
           return item.candidate.id;
         });
-        return { soundEffects: soundEffects, youtubeSoundEffects: youtubeSoundEffects };
+        filters["sound-effect"] = false;
+        filters.youtube = false;
+        filters.music = true;
+        var music = filtered().map(function (item) {
+          return item.candidate.id;
+        });
+        filters.music = false;
+        filters.archive = true;
+        var archiveOnly = filtered().map(function (item) {
+          return item.candidate.id;
+        });
+        return {
+          defaultIds: defaultIds,
+          soundEffects: soundEffects,
+          youtubeSoundEffects: youtubeSoundEffects,
+          music: music,
+          archiveOnly: archiveOnly,
+        };
       })()
     `,
     context,
-  ) as { soundEffects: string[]; youtubeSoundEffects: string[] };
+  ) as {
+    defaultIds: string[];
+    soundEffects: string[];
+    youtubeSoundEffects: string[];
+    music: string[];
+    archiveOnly: string[];
+  };
 
+  // Archive is hidden until its source chip is selected.
+  assert.deepEqual(Array.from(result.defaultIds), ["track", "effect"]);
   assert.deepEqual(Array.from(result.soundEffects), ["effect"]);
   assert.deepEqual(Array.from(result.youtubeSoundEffects), []);
+  assert.deepEqual(Array.from(result.music), ["track"]);
+  assert.deepEqual(Array.from(result.archiveOnly), ["concert", "field"]);
 });

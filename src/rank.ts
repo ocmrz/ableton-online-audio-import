@@ -43,7 +43,8 @@ export function scoreCandidate(c: Candidate, query: string): ScoredCandidate {
   const notes: string[] = [];
   let score = 0;
 
-  if (c.source !== "bbc") {
+  const isSoundEffect = c.source === "bbc" || c.kind === "sound-effect";
+  if (!isSoundEffect) {
     const variantText = `${c.title} ${c.album ?? ""}`;
     for (const keyword of VARIANT_KEYWORDS) {
       if (hasWord(variantText, keyword) && !hasWord(query, keyword)) {

@@ -31,6 +31,12 @@ describe("detectInput", () => {
     if (d.kind === "url") assert.equal(d.source, "soundcloud");
   });
 
+  it("detects Internet Archive URLs", () => {
+    const d = detectInput("https://archive.org/details/cjbeards-fire-and-thunder");
+    assert.equal(d.kind, "url");
+    if (d.kind === "url") assert.equal(d.source, "archive");
+  });
+
   it("treats plain text as query", () => {
     const d = detectInput("wonderwall oasis");
     assert.equal(d.kind, "query");
@@ -144,5 +150,36 @@ describe("rankCandidates", () => {
       "door",
     );
     assert.deepEqual(scored.notes, []);
+  });
+
+  it("does not apply song-specific penalties to Internet Archive sound effects", () => {
+    const scored = scoreCandidate(
+      make({
+        id: "archive",
+        title: "Door slam loop",
+        artists: [],
+        album: "opensource_audio",
+        durationS: 8,
+        source: "archive",
+        kind: "sound-effect",
+      }),
+      "door",
+    );
+    assert.deepEqual(scored.notes, []);
+  });
+
+  it("applies live penalties to Internet Archive music", () => {
+    const scored = scoreCandidate(
+      make({
+        id: "concert",
+        title: "Wonderwall Live at Wembley",
+        artists: ["Oasis"],
+        durationS: 259,
+        source: "archive",
+        kind: "music",
+      }),
+      "wonderwall oasis",
+    );
+    assert.ok(scored.notes.some((note) => note.includes('variant "live"')));
   });
 });

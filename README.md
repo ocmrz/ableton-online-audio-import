@@ -2,7 +2,7 @@
 
 **Find and import online audio without leaving Ableton Live.**
 
-Online Audio searches YouTube, YouTube Music, SoundCloud, and BBC Sound Effects inside Ableton Live. Preview and trim a result, then import the full track or selected range into a clip slot or Arrangement track.
+Online Audio searches YouTube, YouTube Music, SoundCloud, BBC Sound Effects, and Internet Archive audio inside Ableton Live. Preview and trim a result, then import the full track or selected range into a clip slot or Arrangement track.
 
 <p align="center">
   <a href="../../releases/latest/download/Online-Audio.ablx"><strong>Download extension (.ablx)</strong></a>
@@ -18,7 +18,7 @@ Online Audio searches YouTube, YouTube Music, SoundCloud, and BBC Sound Effects 
 
 1. Right-click a clip slot, an Arrangement selection, or an audio track.
 2. Choose **Extensions → Online Audio: Import…**
-3. Search for a song or sound effect, or paste a YouTube, YouTube Music, or SoundCloud URL.
+3. Search for a song or sound effect, or paste a YouTube, YouTube Music, SoundCloud, or Internet Archive URL.
 4. Pick a result to preview it.
 5. (Optional) Drag the timeline's **Start** and **End** handles to select a range.
 6. Click **Import**. The selected audio would be placed in your set.
@@ -47,6 +47,8 @@ The extension checks `yt-dlp` for updates about once a day; its pinned FFmpeg ve
 Download only audio you have permission to use. Follow copyright law and each source's terms of service.
 
 BBC Sound Effects audio is available under the BBC RemArc licence for non-commercial personal, research, and formal education use. Commercial use requires a separate licence from Pro Sound Effects. BBC metadata is licensed separately under the Open Government Licence 3.0.
+
+Internet Archive items each carry their own rights statement. Confirm the item page licence before reuse.
 
 <details>
 <summary><strong>Development and packaging</strong></summary>

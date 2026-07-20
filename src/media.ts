@@ -15,6 +15,11 @@ const DIRECT_AUDIO_FORMAT = [
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 8;
 const BBC_MEDIA_BASE_URL = "https://sound-effects-media.bbcrewind.co.uk";
+const ARCHIVE_METADATA_URL = "https://archive.org/metadata";
+const ARCHIVE_DOWNLOAD_BASE_URL = "https://archive.org/download";
+const ARCHIVE_AUDIO_EXT = /^(mp3|ogg|flac|wav|m4a|aif|aiff)$/i;
+const ARCHIVE_USER_AGENT =
+  "Online-Audio/0.3 (Ableton Live extension; +https://github.com/)";
 const YOUTUBE_PLAYER_URL =
   "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
 const IOS_USER_AGENT =
@@ -138,6 +143,145 @@ function resolveBbcDirect(
     url: `${BBC_MEDIA_BASE_URL}/${ext}/${candidate.id}.${ext}`,
     ext,
     durationS: candidate.durationS,
+    httpHeaders: {},
+  };
+}
+
+interface ArchiveFile {
+  name?: string;
+  format?: string;
+  length?: string;
+  size?: string;
+  source?: string;
+}
+
+function archiveFileExt(name: string): string {
+  const match = /\.([a-zA-Z0-9]{1,8})$/.exec(name);
+  return match?.[1]?.toLowerCase() ?? "";
+}
+
+function archiveFileStem(name: string): string {
+  return name.replace(/\.[^.]+$/, "").toLowerCase();
+}
+
+function isArchiveAudioFile(file: ArchiveFile): boolean {
+  const name = file.name?.trim() ?? "";
+  if (!name || name.includes("/") || name.includes("\\")) return false;
+  const ext = archiveFileExt(name);
+  if (!ARCHIVE_AUDIO_EXT.test(ext)) return false;
+  // Skip obvious non-track side-car names.
+  if (/\b(_64kb|spectrogram|sample)\b/i.test(name)) return false;
+  return true;
+}
+
+function archiveLengthS(file: ArchiveFile): number | null {
+  const value = Number(file.length);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function archiveFormatScore(file: ArchiveFile, profile: MediaProfile): number {
+  const ext = archiveFileExt(file.name || "");
+  const previewRank: Record<string, number> = {
+    mp3: 100,
+    m4a: 80,
+    ogg: 60,
+    flac: 40,
+    wav: 20,
+    aif: 20,
+    aiff: 20,
+  };
+  const downloadRank: Record<string, number> = {
+    wav: 100,
+    aiff: 95,
+    aif: 95,
+    flac: 90,
+    mp3: 50,
+    m4a: 40,
+    ogg: 30,
+  };
+  const rank = (profile === "preview" ? previewRank : downloadRank)[ext] ?? 0;
+  const originalBoost = file.source === "original" ? 5 : 0;
+  const size = Number(file.size) || 0;
+  // Preview: smaller files start faster. Download: prefer larger of same format.
+  const sizeTerm = profile === "preview" ? -size : size;
+  return rank * 1e12 + originalBoost * 1e11 + sizeTerm;
+}
+
+/** Duration of the audio file this extension would preview from an IA item. */
+export function durationFromArchiveFiles(files: ArchiveFile[]): number | null {
+  const file = pickArchiveAudioFile(files, "preview");
+  return file ? archiveLengthS(file) : null;
+}
+
+function pickArchiveAudioFile(
+  files: ArchiveFile[],
+  profile: MediaProfile,
+): ArchiveFile | null {
+  const audio = files.filter(isArchiveAudioFile);
+  if (audio.length === 0) return null;
+
+  const byStem = new Map<string, ArchiveFile[]>();
+  for (const file of audio) {
+    const stem = archiveFileStem(file.name || "");
+    const group = byStem.get(stem);
+    if (group) group.push(file);
+    else byStem.set(stem, [file]);
+  }
+
+  const stems = [...byStem.entries()].sort((a, b) => {
+    const lengthA =
+      a[1].map(archiveLengthS).find((value) => value != null) ?? null;
+    const lengthB =
+      b[1].map(archiveLengthS).find((value) => value != null) ?? null;
+    // Prefer shorter tracks so multi-file packs surface a usable clip.
+    if (lengthA != null && lengthB != null && lengthA !== lengthB) {
+      return lengthA - lengthB;
+    }
+    if (lengthA != null && lengthB == null) return -1;
+    if (lengthA == null && lengthB != null) return 1;
+    return a[0].localeCompare(b[0]);
+  });
+
+  const group = stems[0]?.[1] ?? [];
+  group.sort(
+    (a, b) => archiveFormatScore(b, profile) - archiveFormatScore(a, profile),
+  );
+  return group[0] ?? null;
+}
+
+async function resolveArchiveDirect(
+  candidate: Candidate,
+  signal: AbortSignal,
+  profile: MediaProfile,
+): Promise<ResolvedMedia> {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,200}$/.test(candidate.id)) {
+    throw new Error("Invalid Internet Archive id.");
+  }
+
+  const res = await fetch(
+    `${ARCHIVE_METADATA_URL}/${encodeURIComponent(candidate.id)}`,
+    {
+      signal,
+      headers: {
+        Accept: "application/json",
+        "User-Agent": ARCHIVE_USER_AGENT,
+      },
+    },
+  );
+  if (!res.ok) {
+    throw new Error(`Internet Archive metadata HTTP ${res.status}`);
+  }
+  const data = (await res.json()) as { files?: ArchiveFile[] };
+  const file = pickArchiveAudioFile(data.files ?? [], profile);
+  if (!file?.name) {
+    throw new Error("Internet Archive item has no playable audio file.");
+  }
+
+  const ext = archiveFileExt(file.name) || "mp3";
+  return {
+    url: `${ARCHIVE_DOWNLOAD_BASE_URL}/${encodeURIComponent(candidate.id)}/${encodeURIComponent(file.name)}`,
+    ext,
+    durationS: archiveLengthS(file) ?? candidate.durationS,
     httpHeaders: {},
   };
 }
@@ -412,6 +556,10 @@ export class MediaResolver {
   ): Promise<ResolvedMedia> {
     if (candidate.source === "bbc") {
       return resolveBbcDirect(candidate, profile);
+    }
+
+    if (candidate.source === "archive") {
+      return resolveArchiveDirect(candidate, signal, profile);
     }
 
     if (candidate.source === "youtube") {

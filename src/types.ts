@@ -1,5 +1,8 @@
 /** One search / URL result that could be imported into Live. */
-export type MediaSource = "youtube" | "soundcloud" | "bbc";
+export type MediaSource = "youtube" | "soundcloud" | "bbc" | "archive";
+
+/** UI type filter: Music vs Sound Effect. */
+export type ItemKind = "music" | "sound-effect";
 
 export interface Candidate {
   id: string;
@@ -11,6 +14,8 @@ export interface Candidate {
   source: MediaSource;
   channel: string | null;
   searchRank: number;
+  /** When set (e.g. Archive), overrides source-based Music / Sound Effect typing. */
+  kind?: ItemKind;
 }
 
 export interface ScoredCandidate {

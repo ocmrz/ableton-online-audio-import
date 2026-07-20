@@ -77,3 +77,70 @@ test("BBC media uses MP3 for preview and WAV for import", async () => {
     resolver.close();
   }
 });
+
+test("Internet Archive media picks MP3 for preview and WAV for import", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        files: [
+          {
+            name: "thunder.mp3",
+            format: "VBR MP3",
+            length: "12.5",
+            size: "200000",
+            source: "original",
+          },
+          {
+            name: "thunder.wav",
+            format: "WAVE",
+            length: "12.5",
+            size: "2000000",
+            source: "original",
+          },
+          {
+            name: "long-bed.mp3",
+            format: "VBR MP3",
+            length: "600",
+            size: "9000000",
+            source: "original",
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+
+  const candidate: Candidate = {
+    id: "thunder-pack",
+    url: "https://archive.org/details/thunder-pack",
+    title: "Thunder Pack",
+    artists: [],
+    album: "opensource_audio",
+    durationS: null,
+    source: "archive",
+    channel: "Internet Archive",
+    searchRank: 0,
+  };
+  const resolver = new MediaResolver("/managed/yt-dlp");
+  try {
+    const preview = await resolver.resolve(candidate, undefined, "preview");
+    const download = await resolver.resolve(candidate, undefined, "download");
+    assert.equal(
+      preview.url,
+      "https://archive.org/download/thunder-pack/thunder.mp3",
+    );
+    assert.equal(preview.ext, "mp3");
+    assert.equal(preview.durationS, 12.5);
+    assert.equal(
+      download.url,
+      "https://archive.org/download/thunder-pack/thunder.wav",
+    );
+    assert.equal(download.ext, "wav");
+  } finally {
+    resolver.close();
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -27,6 +27,7 @@ import logoYoutube from "../assets/youtube.png";
 import logoYoutubeMusic from "../assets/youtube-music.png";
 import logoSoundcloud from "../assets/soundcloud.png";
 import logoBbc from "../assets/bbc.png";
+import logoArchive from "../assets/archive.png";
 
 let liveFontCss = "";
 
@@ -35,7 +36,8 @@ function withLogos(html: string): string {
     .replaceAll("__LOGO_YOUTUBE__", logoYoutube)
     .replaceAll("__LOGO_YOUTUBE_MUSIC__", logoYoutubeMusic)
     .replaceAll("__LOGO_SOUNDCLOUD__", logoSoundcloud)
-    .replaceAll("__LOGO_BBC__", logoBbc);
+    .replaceAll("__LOGO_BBC__", logoBbc)
+    .replaceAll("__LOGO_ARCHIVE__", logoArchive);
   return out;
 }
 function requireDir(dir: string | undefined, name: string): string {
@@ -158,7 +160,8 @@ function parseImportPick(raw: string): ImportPick | null {
     if (
       source !== "youtube" &&
       source !== "soundcloud" &&
-      source !== "bbc"
+      source !== "bbc" &&
+      source !== "archive"
     ) {
       return null;
     }
@@ -176,6 +179,9 @@ function parseImportPick(raw: string): ImportPick | null {
       source: source as MediaSource,
       channel: typeof o.channel === "string" ? o.channel : null,
       searchRank: typeof o.searchRank === "number" ? o.searchRank : 0,
+      ...(o.kind === "music" || o.kind === "sound-effect"
+        ? { kind: o.kind }
+        : {}),
     };
     const rangeValue = parsed.range;
     if (!rangeValue || typeof rangeValue !== "object") {

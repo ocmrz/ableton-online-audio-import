@@ -10,6 +10,7 @@ import { rankCandidates } from "./rank.js";
 import {
   mergeSearchResults,
   resolveUrl,
+  searchArchive,
   searchBbc,
   searchSoundCloud,
   searchYouTube,
@@ -18,7 +19,12 @@ import {
 import type { Candidate } from "./types.js";
 import { artistStr } from "./types.js";
 
-export type Brand = "youtube" | "youtube-music" | "soundcloud" | "bbc";
+export type Brand =
+  | "youtube"
+  | "youtube-music"
+  | "soundcloud"
+  | "bbc"
+  | "archive";
 
 export interface SearchServer {
   port: number;
@@ -51,7 +57,8 @@ function candidateFromValue(value: unknown): Candidate {
   if (
     source !== "youtube" &&
     source !== "soundcloud" &&
-    source !== "bbc"
+    source !== "bbc" &&
+    source !== "archive"
   ) {
     throw new Error("Unsupported preview source.");
   }
@@ -78,10 +85,15 @@ function candidateFromValue(value: unknown): Candidate {
         host === "youtu.be"
       : source === "soundcloud"
         ? host === "soundcloud.com" || host.endsWith(".soundcloud.com")
-        : host === "sound-effects.bbcrewind.co.uk";
+        : source === "bbc"
+          ? host === "sound-effects.bbcrewind.co.uk"
+          : host === "archive.org";
   if (!validHost || sourceUrl.protocol !== "https:") {
     throw new Error("Unsupported preview URL.");
   }
+
+  const kind =
+    raw.kind === "music" || raw.kind === "sound-effect" ? raw.kind : undefined;
 
   return {
     id: raw.id,
@@ -95,6 +107,7 @@ function candidateFromValue(value: unknown): Candidate {
     source,
     channel: typeof raw.channel === "string" ? raw.channel : null,
     searchRank: typeof raw.searchRank === "number" ? raw.searchRank : 0,
+    ...(kind ? { kind } : {}),
   };
 }
 
@@ -174,6 +187,7 @@ async function proxyMedia(
 
 export function brandFor(c: Candidate): Brand {
   if (c.source === "bbc") return "bbc";
+  if (c.source === "archive") return "archive";
   if (c.source === "soundcloud") return "soundcloud";
   if (
     c.url.includes("music.youtube.com") ||
@@ -184,6 +198,11 @@ export function brandFor(c: Candidate): Brand {
   return "youtube";
 }
 
+function itemType(c: Candidate): "music" | "sound-effect" {
+  if (c.kind === "music" || c.kind === "sound-effect") return c.kind;
+  return c.source === "bbc" ? "sound-effect" : "music";
+}
+
 function toItem(c: Candidate, score: number | null, notes: string) {
   return {
     id: c.id,
@@ -191,7 +210,7 @@ function toItem(c: Candidate, score: number | null, notes: string) {
     subtitle: artistStr(c) || c.channel || c.source,
     source: c.source,
     brand: brandFor(c),
-    type: c.source === "bbc" ? "sound-effect" : "song",
+    type: itemType(c),
     durationS: c.durationS,
     score,
     notes,
@@ -252,7 +271,7 @@ export async function startSearchServer(opts: {
         }
 
         const rankedQuery = detected.query;
-        const [ytm, yt, sc, bbc] = await Promise.all([
+        const [ytm, yt, sc, bbc, archive] = await Promise.all([
           searchYouTubeMusic(rankedQuery).catch(() => [] as Candidate[]),
           searchYouTube(opts.ytDlpPath, rankedQuery).catch(
             () => [] as Candidate[],
@@ -261,9 +280,10 @@ export async function startSearchServer(opts: {
             storageDir: opts.storageDir,
           }).catch(() => [] as Candidate[]),
           searchBbc(rankedQuery).catch(() => [] as Candidate[]),
+          searchArchive(rankedQuery).catch(() => [] as Candidate[]),
         ]);
         const ranked = rankCandidates(
-          mergeSearchResults(ytm, yt, sc, bbc),
+          mergeSearchResults(ytm, yt, sc, bbc, archive),
           rankedQuery,
         );
         const items = ranked.map((s) =>

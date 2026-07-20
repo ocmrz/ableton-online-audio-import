@@ -30,7 +30,8 @@
         "youtube-music": false,
         soundcloud: false,
         bbc: false,
-        song: false,
+        archive: false,
+        music: false,
         "sound-effect": false,
       };
       var selected = 0;
@@ -86,6 +87,7 @@
         "youtube-music": "__LOGO_YOUTUBE_MUSIC__",
         soundcloud: "__LOGO_SOUNDCLOUD__",
         bbc: "__LOGO_BBC__",
+        archive: "__LOGO_ARCHIVE__",
       };
 
       function brandIcon(brand) {
@@ -1715,22 +1717,49 @@
           filters.youtube ||
           filters["youtube-music"] ||
           filters.soundcloud ||
-          filters.bbc
+          filters.bbc ||
+          filters.archive
         );
       }
 
       function anyTypeFilterOn() {
-        return filters.song || filters["sound-effect"];
+        return filters.music || filters["sound-effect"];
+      }
+
+      function itemType(item) {
+        if (item.type) return item.type;
+        var candidate = item.candidate || {};
+        if (candidate.kind === "music" || candidate.kind === "sound-effect") {
+          return candidate.kind;
+        }
+        return candidate.source === "bbc" ? "sound-effect" : "music";
+      }
+
+      function isArchiveItem(item) {
+        var brand = item.brand || (item.candidate && item.candidate.source);
+        return brand === "archive";
+      }
+
+      function archiveResultsAllowed() {
+        // Opt-in only: Archive is too noisy in the default mixed results.
+        // Still allow a pasted archive.org URL (search returns only Archive hits).
+        if (filters.archive) return true;
+        return (
+          ranked.length > 0 &&
+          ranked.every(function (item) {
+            return isArchiveItem(item);
+          })
+        );
       }
 
       function filtered() {
+        var allowArchive = archiveResultsAllowed();
         return ranked.filter(function (s) {
+          if (isArchiveItem(s) && !allowArchive) return false;
           var sourceMatches =
             !anySourceFilterOn() ||
             filters[s.brand || s.candidate.source];
-          var type = s.type ||
-            (s.candidate.source === "bbc" ? "sound-effect" : "song");
-          var typeMatches = !anyTypeFilterOn() || filters[type];
+          var typeMatches = !anyTypeFilterOn() || filters[itemType(s)];
           return sourceMatches && typeMatches;
         });
       }
@@ -1883,9 +1912,7 @@
               candidate: it.candidate,
               subtitle: it.subtitle,
               brand: it.brand || it.source,
-              type:
-                it.type ||
-                (it.candidate.source === "bbc" ? "sound-effect" : "song"),
+              type: itemType(it),
               score: it.score,
               notes: it.notes,
             };
@@ -3243,6 +3270,21 @@
                 />
                 BBC
               </button>
+              <button
+                class="chip"
+                type="button"
+                data-filter="archive"
+                title="Internet Archive"
+              >
+                <img
+                  class="brand-icon"
+                  src="__LOGO_ARCHIVE__"
+                  alt=""
+                  width="10"
+                  height="10"
+                />
+                Internet Archive
+              </button>
             </div>
           </div>
         </div>
@@ -3262,10 +3304,10 @@
               <button
                 class="chip"
                 type="button"
-                data-filter="song"
-                title="Song"
+                data-filter="music"
+                title="Music"
               >
-                Song
+                Music
               </button>
               <button
                 class="chip"

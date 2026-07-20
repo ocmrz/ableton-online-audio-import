@@ -2,7 +2,9 @@ import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { URL } from "node:url";
 
-import type { Candidate, MediaSource } from "./types.js";
+import { archiveIdFromUrl } from "./detect.js";
+import { durationFromArchiveFiles } from "./media.js";
+import type { Candidate, ItemKind, MediaSource } from "./types.js";
 import { runProcess } from "./process.js";
 
 const SEARCH_LIMIT = 5;
@@ -10,6 +12,8 @@ const SEARCH_TIMEOUT_MS = 12_000;
 const SEP = "\t";
 const BBC_SEARCH_URL =
   "https://sound-effects-api.bbcrewind.co.uk/api/sfx/search";
+const ARCHIVE_SEARCH_URL = "https://archive.org/advancedsearch.php";
+const ARCHIVE_METADATA_URL = "https://archive.org/metadata";
 
 const PRINT_FMT = [
   "%(id)s",
@@ -800,16 +804,515 @@ export async function searchBbc(
   return withDeadline(work, SEARCH_TIMEOUT_MS + 2_000, [], signal);
 }
 
+interface ArchiveSearchDoc {
+  identifier?: string;
+  title?: string | string[];
+  creator?: string | string[];
+  runtime?: string | string[];
+  collection?: string | string[];
+  subject?: string | string[];
+}
+
+/**
+ * Spoken-word / non-musical catalogs to drop from Archive search:
+ * audiobooks, podcasts, old radio, sermons, lectures, religious recitation.
+ */
+const ARCHIVE_EXCLUDED_COLLECTIONS = [
+  "librivoxaudio",
+  "podcasts",
+  "podcasts_miscellaneous",
+  "oldtimeradio",
+  "radioprograms",
+  "theoldtimeradio",
+  "ytjdradio",
+  "audio_bookspoetry",
+  "audio_books",
+  "audio_sermons",
+  "audio_islamic",
+  "audio_religion",
+  "sermonindex",
+  "sermonindex_audio",
+  "newsletters",
+  "newsletters_inbox",
+  "magazine_rack",
+  "attentionkmartshoppers",
+  "folksoundomy_podfic",
+  "audio_news",
+  "hifidelity_potpourri",
+  "ucberkeley-webcast",
+] as const;
+
+const ARCHIVE_EXCLUDED_COLLECTION_PREFIXES = [
+  "podcast",
+  "librivox",
+  "oldtimeradio",
+  "otr",
+  "audio_book",
+  "radioprogram",
+  "sermon",
+  "audio_sermon",
+  "audio_islamic",
+  "audio_religion",
+  "newsletter",
+  "audio_news",
+  "podfic",
+  "webcast",
+] as const;
+
+const ARCHIVE_EXCLUDED_SUBJECTS = [
+  "podcast",
+  "podcasts",
+  "audiobook",
+  "audiobooks",
+  "librivox",
+  "old time radio",
+  "otr",
+  "otrr",
+  "spoken word",
+  "lecture",
+  "lectures",
+  "sermon",
+  "sermons",
+  "speech",
+  "speeches",
+  "interview",
+  "interviews",
+  "radio drama",
+  "text to speech",
+  "quran",
+  "qur'an",
+  "bible",
+] as const;
+
+const ARCHIVE_SPOKEN_TEXT =
+  /\b(spoken word|audiobook|podcast|lecture|lectures|sermon|sermons|speech|speeches|interview|interviews|radio drama|text to speech|quran|qur'?an|tafseer|bible in audio|audio bible|waz)\b/i;
+
+function firstString(value: string | string[] | undefined): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item !== "string") continue;
+      const trimmed = item.trim();
+      if (trimmed) return trimmed;
+    }
+  }
+  return null;
+}
+
+function stringList(value: string | string[] | undefined): string[] {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+const ARCHIVE_SFX_COLLECTIONS = new Set([
+  "folksoundomy_effects",
+]);
+
+const ARCHIVE_MUSIC_COLLECTIONS = new Set([
+  "netlabels",
+  "audio_music",
+  "78rpm",
+  "etree",
+  "live_music_archive",
+  "hifidelity_soundtracks",
+  "bandcamp",
+]);
+
+const ARCHIVE_SFX_TEXT =
+  /\b(sound effects?|sound fx|sfx|foley|field recordings?|nature sounds?|white noise|pink noise|brown(?:ian)? noise|ambience|atmosphere|soundscape|rain sounds?|thunder|door slam|whoosh|impacts?)\b/i;
+
+const ARCHIVE_MUSIC_TEXT =
+  /\b(album|ep\b|single|concert|live at|live music|soundtrack|ost\b|remix|mixtape|discography|orchestra|symphony|songs?|hits|music|guitar|piano|jazz|rock|metal|hip[- ]?hop|techno|house music|netlabel|grateful dead|bollywood|hindi|tamil|punjabi|carnatic|hindustani|raga|bhajan|ghazal|indian classical)\b/i;
+
+/**
+ * Classify Internet Archive audio as Music or Sound Effect from catalog cues.
+ * Field recordings / SFX libraries → sound-effect; concerts / netlabels → music.
+ */
+export function archiveItemKind(doc: {
+  identifier?: string;
+  title?: string | string[];
+  collection?: string | string[];
+  subject?: string | string[];
+}): ItemKind {
+  let sfxScore = 0;
+  let musicScore = 0;
+
+  for (const collection of stringList(doc.collection)) {
+    const lower = collection.toLowerCase();
+    if (lower.startsWith("fav-") || lower === "community") continue;
+    if (ARCHIVE_SFX_COLLECTIONS.has(lower)) sfxScore += 4;
+    if (ARCHIVE_MUSIC_COLLECTIONS.has(lower)) musicScore += 4;
+    if (/(?:^|_)(?:effects?|sfx|foley|soundfx)(?:_|$)/.test(lower)) {
+      sfxScore += 3;
+    }
+    if (
+      /(?:^|_)(?:netlabels?|etree|concert|bandcamp|musica|soundtrack|discography|live_music)(?:_|$)/.test(
+        lower,
+      )
+    ) {
+      musicScore += 3;
+    }
+  }
+
+  const title = firstString(doc.title) || "";
+  const subjects = stringList(doc.subject).join(" ");
+  const blob = `${title} ${subjects} ${doc.identifier || ""}`;
+
+  if (ARCHIVE_SFX_TEXT.test(blob)) sfxScore += 3;
+  if (ARCHIVE_MUSIC_TEXT.test(blob)) musicScore += 3;
+
+  // Explicit SFX packs in title/id win even inside music-ish collections.
+  if (
+    /\b(sound effects?|sound fx|sfx library|foley)\b/i.test(blob) ||
+    /sound[_-]?effects?/i.test(doc.identifier || "")
+  ) {
+    sfxScore += 4;
+  }
+
+  // opensource_audio / ourmedia are mixed dumps. Only call something a sound
+  // effect when SFX cues win; otherwise treat it as music (Bollywood uploads,
+  // ragas, etc. often lack English "song" wording).
+  if (sfxScore > musicScore) return "sound-effect";
+  return "music";
+}
+
+/** True when an Archive hit is spoken-word (speech, sermon, podcast, radio, etc.). */
+export function isExcludedArchiveDoc(doc: {
+  identifier?: string;
+  title?: string | string[];
+  collection?: string | string[];
+  subject?: string | string[];
+}): boolean {
+  const id = (doc.identifier || "").toLowerCase();
+  if (
+    id.includes("librivox") ||
+    id.startsWith("otrr_") ||
+    id.includes("oldtimeradio") ||
+    id.includes("podcast") ||
+    id.includes("sermon") ||
+    id.includes("lecture") ||
+    /\bquran\b/.test(id) ||
+    id.includes("quran")
+  ) {
+    return true;
+  }
+
+  for (const collection of stringList(doc.collection)) {
+    const lower = collection.toLowerCase();
+    if (lower.startsWith("fav-")) continue;
+    if (
+      (ARCHIVE_EXCLUDED_COLLECTIONS as readonly string[]).includes(lower) ||
+      ARCHIVE_EXCLUDED_COLLECTION_PREFIXES.some((prefix) =>
+        lower.startsWith(prefix),
+      )
+    ) {
+      return true;
+    }
+  }
+
+  for (const subject of stringList(doc.subject)) {
+    const lower = subject.toLowerCase();
+    if ((ARCHIVE_EXCLUDED_SUBJECTS as readonly string[]).includes(lower)) {
+      return true;
+    }
+    if (
+      lower.includes("old time radio") ||
+      lower.includes("audiobook") ||
+      lower.includes("podcast") ||
+      lower.includes("librivox") ||
+      lower.includes("spoken word") ||
+      lower.includes("lecture") ||
+      lower.includes("sermon") ||
+      lower.includes("interview") ||
+      lower.includes("text to speech")
+    ) {
+      return true;
+    }
+  }
+
+  const title = firstString(doc.title) || "";
+  const blob = `${title} ${stringList(doc.subject).join(" ")} ${id}`;
+  if (ARCHIVE_SPOKEN_TEXT.test(blob) || /\botrr?\b/i.test(title)) {
+    return true;
+  }
+
+  return false;
+}
+
+/** Parse Internet Archive runtime strings like "3:45", "5:48.18", "1:02:03", or "90.5". */
+export function parseArchiveRuntime(raw: string | null | undefined): number | null {
+  if (!raw) return null;
+  const text = raw.trim();
+  if (!text) return null;
+  if (/^\d+(\.\d+)?$/.test(text)) {
+    const seconds = Number(text);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+  }
+  const hms = text.match(/^(\d+):(\d{1,2}):(\d{1,2}(?:\.\d+)?)/);
+  if (hms) {
+    const hours = Number(hms[1]);
+    const minutes = Number(hms[2]);
+    const seconds = Number(hms[3]);
+    if (![hours, minutes, seconds].every(Number.isFinite)) return null;
+    return hours * 3600 + minutes * 60 + seconds;
+  }
+  const ms = text.match(/^(\d+):(\d{1,2}(?:\.\d+)?)/);
+  if (!ms) return null;
+  const minutes = Number(ms[1]);
+  const seconds = Number(ms[2]);
+  if (![minutes, seconds].every(Number.isFinite)) return null;
+  return minutes * 60 + seconds;
+}
+
+const ARCHIVE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,200}$/;
+const ARCHIVE_USER_AGENT =
+  "Online-Audio/0.3 (Ableton Live extension; +https://github.com/)";
+
+function archiveSearchQuery(query: string): string {
+  const words = query
+    .replace(/[+\-&|!(){}[\]^"~*?:\\/]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 8);
+  const textQuery = words.length > 0 ? `${words.join(" ")} AND ` : "";
+  // Drop spoken-word catalogs that dominate download-sorted audio search.
+  return (
+    `${textQuery}mediatype:audio` +
+    " AND NOT collection:(" +
+    ARCHIVE_EXCLUDED_COLLECTIONS.join(" OR ") +
+    ")" +
+    " AND NOT subject:(" +
+    ARCHIVE_EXCLUDED_SUBJECTS.map((subject) =>
+      subject.includes(" ") ? `"${subject}"` : subject,
+    ).join(" OR ") +
+    ")"
+  );
+}
+
+function isArchiveId(id: string): boolean {
+  return ARCHIVE_ID_RE.test(id);
+}
+
+async function hydrateArchiveDuration(
+  candidate: Candidate,
+  signal: AbortSignal,
+): Promise<Candidate> {
+  if (candidate.durationS != null) return candidate;
+  throwIfAborted(signal);
+  try {
+    const res = await fetch(
+      `${ARCHIVE_METADATA_URL}/${encodeURIComponent(candidate.id)}`,
+      {
+        signal,
+        headers: {
+          Accept: "application/json",
+          "User-Agent": ARCHIVE_USER_AGENT,
+        },
+      },
+    );
+    if (!res.ok) return candidate;
+    const data = (await res.json()) as {
+      metadata?: { runtime?: string | string[] };
+      files?: Array<{
+        name?: string;
+        format?: string;
+        length?: string;
+        size?: string;
+        source?: string;
+      }>;
+    };
+    const fromFiles = durationFromArchiveFiles(data.files ?? []);
+    if (fromFiles != null) return { ...candidate, durationS: fromFiles };
+    const fromRuntime = parseArchiveRuntime(firstString(data.metadata?.runtime));
+    return fromRuntime != null
+      ? { ...candidate, durationS: fromRuntime }
+      : candidate;
+  } catch {
+    return candidate;
+  }
+}
+
+/**
+ * Search Internet Archive audio through the public Advanced Search JSON API.
+ * Failures stay isolated from the other providers.
+ */
+export async function searchArchive(
+  query: string,
+  signal?: AbortSignal,
+): Promise<Candidate[]> {
+  const work = (async () => {
+    throwIfAborted(signal);
+    const ctrl = new AbortController();
+    const onOuter = () => ctrl.abort();
+    signal?.addEventListener("abort", onOuter, { once: true });
+    const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
+    try {
+      // Build the query string explicitly. Some runtimes mishandle repeated
+      // fl[] / sort[] keys from URLSearchParams.
+      const q = encodeURIComponent(archiveSearchQuery(query));
+      // Fetch extra rows so client-side spoken-word filtering can still fill
+      // SEARCH_LIMIT after dropping podcast / radio / audiobook leftovers.
+      const url =
+        `${ARCHIVE_SEARCH_URL}?q=${q}` +
+        `&output=json&rows=${SEARCH_LIMIT * 4}&page=1` +
+        `&fl[]=identifier,title,creator,runtime,collection,subject` +
+        `&sort[]=${encodeURIComponent("downloads desc")}`;
+      const res = await fetch(url, {
+        signal: ctrl.signal,
+        headers: {
+          Accept: "application/json",
+          "User-Agent": ARCHIVE_USER_AGENT,
+        },
+      });
+      if (!res.ok) throw new Error(`Internet Archive search HTTP ${res.status}`);
+      const contentType = res.headers.get("content-type") || "";
+      const body = await res.text();
+      if (!contentType.includes("json") && !body.trimStart().startsWith("{")) {
+        throw new Error("Internet Archive search returned a non-JSON response.");
+      }
+      const data = JSON.parse(body) as {
+        response?: { docs?: ArchiveSearchDoc[] };
+      };
+      const candidates: Candidate[] = [];
+      for (const doc of data.response?.docs ?? []) {
+        if (candidates.length >= SEARCH_LIMIT) break;
+        if (isExcludedArchiveDoc(doc)) continue;
+        const id = doc.identifier?.trim();
+        const title = firstString(doc.title);
+        if (!id || !isArchiveId(id) || !title) continue;
+        const creator = firstString(doc.creator);
+        candidates.push({
+          id,
+          url: `https://archive.org/details/${id}`,
+          title,
+          artists: creator ? [creator] : [],
+          album: null,
+          durationS: parseArchiveRuntime(firstString(doc.runtime)),
+          source: "archive",
+          channel: "Internet Archive",
+          searchRank: candidates.length,
+          kind: archiveItemKind(doc),
+        });
+      }
+      // Search rarely includes runtime; read file lengths from item metadata.
+      return await Promise.all(
+        candidates.map((candidate) =>
+          hydrateArchiveDuration(candidate, ctrl.signal),
+        ),
+      );
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onOuter);
+    }
+  })().catch((err: unknown) => {
+    console.error("[search archive]", err);
+    return [] as Candidate[];
+  });
+
+  return withDeadline(work, SEARCH_TIMEOUT_MS + 2_000, [], signal);
+}
+
+export async function resolveArchiveCandidate(
+  id: string,
+  signal?: AbortSignal,
+): Promise<Candidate> {
+  if (!isArchiveId(id)) {
+    throw new Error("Invalid Internet Archive id.");
+  }
+  throwIfAborted(signal);
+  const ctrl = new AbortController();
+  const onOuter = () => ctrl.abort();
+  signal?.addEventListener("abort", onOuter, { once: true });
+  const timer = setTimeout(() => ctrl.abort(), 12_000);
+  try {
+    const res = await fetch(`${ARCHIVE_METADATA_URL}/${encodeURIComponent(id)}`, {
+      signal: ctrl.signal,
+      headers: {
+        Accept: "application/json",
+        "User-Agent": ARCHIVE_USER_AGENT,
+      },
+    });
+    if (!res.ok) {
+      throw new Error(`Internet Archive metadata HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as {
+      metadata?: {
+        identifier?: string;
+        title?: string | string[];
+        creator?: string | string[];
+        runtime?: string | string[];
+        collection?: string | string[];
+        subject?: string | string[];
+      };
+      files?: Array<{
+        name?: string;
+        format?: string;
+        length?: string;
+        size?: string;
+        source?: string;
+      }>;
+    };
+    const meta = data.metadata ?? {};
+    const resolvedId = meta.identifier?.trim() || id;
+    if (!isArchiveId(resolvedId)) {
+      throw new Error("Invalid Internet Archive id.");
+    }
+    const title = firstString(meta.title) || resolvedId;
+    const creator = firstString(meta.creator);
+    return {
+      id: resolvedId,
+      url: `https://archive.org/details/${resolvedId}`,
+      title,
+      artists: creator ? [creator] : [],
+      album: null,
+      durationS:
+        durationFromArchiveFiles(data.files ?? []) ??
+        parseArchiveRuntime(firstString(meta.runtime)),
+      source: "archive",
+      channel: "Internet Archive",
+      searchRank: 0,
+      kind: archiveItemKind({
+        identifier: resolvedId,
+        title,
+        ...(meta.collection != null ? { collection: meta.collection } : {}),
+        ...(meta.subject != null ? { subject: meta.subject } : {}),
+      }),
+    };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onOuter);
+  }
+}
+
 /** Prefer YouTube Music ids when the same video appears in regular YouTube too. */
 export function mergeSearchResults(
   youtubeMusic: Candidate[],
   youtube: Candidate[],
   soundcloud: Candidate[],
   bbc: Candidate[] = [],
+  archive: Candidate[] = [],
 ): Candidate[] {
   const seen = new Set<string>();
   const out: Candidate[] = [];
-  for (const c of [...youtubeMusic, ...youtube, ...soundcloud, ...bbc]) {
+  for (const c of [
+    ...youtubeMusic,
+    ...youtube,
+    ...soundcloud,
+    ...bbc,
+    ...archive,
+  ]) {
     const key = `${c.source}:${c.id}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -829,7 +1332,10 @@ export async function searchBoth(
     searchYouTube(ytDlpPath, query, opts?.signal),
     searchSoundCloud(query, opts),
     searchBbc(query, opts?.signal),
-  ]).then(([ytm, yt, sc, bbc]) => mergeSearchResults(ytm, yt, sc, bbc));
+    searchArchive(query, opts?.signal),
+  ]).then(([ytm, yt, sc, bbc, archive]) =>
+    mergeSearchResults(ytm, yt, sc, bbc, archive),
+  );
 
   // Cancel must settle the progress dialog even if fetch ignores AbortSignal.
   return settleOnAbort(work, opts?.signal, () => {
@@ -884,6 +1390,16 @@ export async function resolveUrl(
       channel: null,
       searchRank: 0,
     };
+  }
+
+  if (source === "archive") {
+    const id = archiveIdFromUrl(url);
+    if (!id) {
+      throw new Error(
+        "Could not find an item in that URL. Paste an archive.org details link.",
+      );
+    }
+    return resolveArchiveCandidate(id, opts?.signal);
   }
 
   if (source === "soundcloud") {
