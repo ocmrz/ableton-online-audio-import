@@ -949,6 +949,21 @@ const ARCHIVE_SFX_TEXT =
 const ARCHIVE_MUSIC_TEXT =
   /\b(album|ep\b|single|concert|live at|live music|soundtrack|ost\b|remix|mixtape|discography|orchestra|symphony|songs?|hits|music|guitar|piano|jazz|rock|metal|hip[- ]?hop|techno|house music|netlabel|grateful dead|bollywood|hindi|tamil|punjabi|carnatic|hindustani|raga|bhajan|ghazal|indian classical)\b/i;
 
+const ARCHIVE_SFX_SEARCH_CLAUSE =
+  '(collection:(folksoundomy_effects) OR ' +
+  'subject:("sound effect" OR "sound effects" OR foley OR "field recording" OR ' +
+  '"field recordings" OR ambience OR soundscape OR "nature sounds") OR ' +
+  'title:("sound effect" OR "sound effects" OR foley OR "field recording" OR ' +
+  '"field recordings" OR ambience OR soundscape OR "nature sounds"))';
+
+const ARCHIVE_MUSIC_SEARCH_CLAUSE =
+  "(collection:(netlabels OR audio_music OR 78rpm OR etree OR " +
+  "live_music_archive OR hifidelity_soundtracks OR bandcamp) OR " +
+  'subject:(music OR album OR concert OR soundtrack OR remix OR jazz OR rock OR ' +
+  '"hip hop" OR techno) OR ' +
+  'title:(music OR album OR concert OR soundtrack OR remix OR jazz OR rock OR ' +
+  '"hip hop" OR techno))';
+
 /**
  * Classify Internet Archive audio as Music or Sound Effect from catalog cues.
  * Field recordings / SFX libraries → sound-effect; concerts / netlabels → music.
@@ -1093,7 +1108,7 @@ const ARCHIVE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,200}$/;
 const ARCHIVE_USER_AGENT =
   "Online-Audio/0.3 (Ableton Live extension; +https://github.com/)";
 
-function archiveSearchQuery(query: string): string {
+function archiveSearchQuery(query: string, kind?: ItemKind): string {
   const words = query
     .replace(/[+\-&|!(){}[\]^"~*?:\\/]/g, " ")
     .replace(/\s+/g, " ")
@@ -1102,9 +1117,16 @@ function archiveSearchQuery(query: string): string {
     .filter(Boolean)
     .slice(0, 8);
   const textQuery = words.length > 0 ? `${words.join(" ")} AND ` : "";
+  const kindQuery =
+    kind === "sound-effect"
+      ? ` AND ${ARCHIVE_SFX_SEARCH_CLAUSE}`
+      : kind === "music"
+        ? ` AND ${ARCHIVE_MUSIC_SEARCH_CLAUSE}`
+        : "";
   // Drop spoken-word catalogs that dominate download-sorted audio search.
   return (
     `${textQuery}mediatype:audio` +
+    kindQuery +
     " AND NOT collection:(" +
     ARCHIVE_EXCLUDED_COLLECTIONS.join(" OR ") +
     ")" +
@@ -1159,29 +1181,35 @@ async function hydrateArchiveDuration(
   }
 }
 
+export interface ArchiveSearchOptions {
+  signal?: AbortSignal;
+  kind?: ItemKind;
+}
+
 /**
  * Search Internet Archive audio through the public Advanced Search JSON API.
  * Failures stay isolated from the other providers.
  */
 export async function searchArchive(
   query: string,
-  signal?: AbortSignal,
+  opts: ArchiveSearchOptions = {},
 ): Promise<Candidate[]> {
   const work = (async () => {
-    throwIfAborted(signal);
+    throwIfAborted(opts.signal);
     const ctrl = new AbortController();
     const onOuter = () => ctrl.abort();
-    signal?.addEventListener("abort", onOuter, { once: true });
+    opts.signal?.addEventListener("abort", onOuter, { once: true });
     const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
     try {
       // Build the query string explicitly. Some runtimes mishandle repeated
       // fl[] / sort[] keys from URLSearchParams.
-      const q = encodeURIComponent(archiveSearchQuery(query));
+      const q = encodeURIComponent(archiveSearchQuery(query, opts.kind));
       // Fetch extra rows so client-side spoken-word filtering can still fill
-      // SEARCH_LIMIT after dropping podcast / radio / audiobook leftovers.
+      // SEARCH_LIMIT after dropping mismatched and spoken-word leftovers.
+      const rowMultiplier = opts.kind ? 8 : 4;
       const url =
         `${ARCHIVE_SEARCH_URL}?q=${q}` +
-        `&output=json&rows=${SEARCH_LIMIT * 4}&page=1` +
+        `&output=json&rows=${SEARCH_LIMIT * rowMultiplier}&page=1` +
         `&fl[]=identifier,title,creator,runtime,collection,subject` +
         `&sort[]=${encodeURIComponent("downloads desc")}`;
       const res = await fetch(url, {
@@ -1204,6 +1232,8 @@ export async function searchArchive(
       for (const doc of data.response?.docs ?? []) {
         if (candidates.length >= SEARCH_LIMIT) break;
         if (isExcludedArchiveDoc(doc)) continue;
+        const kind = archiveItemKind(doc);
+        if (opts.kind && kind !== opts.kind) continue;
         const id = doc.identifier?.trim();
         const title = firstString(doc.title);
         if (!id || !isArchiveId(id) || !title) continue;
@@ -1218,7 +1248,7 @@ export async function searchArchive(
           source: "archive",
           channel: "Internet Archive",
           searchRank: candidates.length,
-          kind: archiveItemKind(doc),
+          kind,
         });
       }
       // Search rarely includes runtime; read file lengths from item metadata.
@@ -1229,14 +1259,14 @@ export async function searchArchive(
       );
     } finally {
       clearTimeout(timer);
-      signal?.removeEventListener("abort", onOuter);
+      opts.signal?.removeEventListener("abort", onOuter);
     }
   })().catch((err: unknown) => {
     console.error("[search archive]", err);
     return [] as Candidate[];
   });
 
-  return withDeadline(work, SEARCH_TIMEOUT_MS + 2_000, [], signal);
+  return withDeadline(work, SEARCH_TIMEOUT_MS + 2_000, [], opts.signal);
 }
 
 interface OpenverseAudioResult {
@@ -1485,7 +1515,7 @@ export async function searchBoth(
     searchYouTube(ytDlpPath, query, opts?.signal),
     searchSoundCloud(query, opts),
     searchBbc(query, opts?.signal),
-    searchArchive(query, opts?.signal),
+    searchArchive(query, opts?.signal ? { signal: opts.signal } : {}),
     searchOpenverse(query, opts?.signal),
   ]).then(([ytm, yt, sc, bbc, archive, openverse]) =>
     mergeSearchResults(ytm, yt, sc, bbc, archive, openverse),

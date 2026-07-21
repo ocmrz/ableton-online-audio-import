@@ -15,6 +15,17 @@ test("import dialog inline script is valid JavaScript", async () => {
   assert.doesNotThrow(() => new vm.Script(script, { filename: "import.html" }));
 });
 
+test("global type filters are replaced by Internet Archive refinements", async () => {
+  const html = await fsp.readFile(
+    new URL("./import.html", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(html, /id="types"/);
+  assert.doesNotMatch(html, /data-filter="(?:music|sound-effect)"/);
+  assert.match(html, /data-filter="archive-music"/);
+  assert.match(html, /data-filter="archive-sound-effect"/);
+});
+
 test("Shift+Space resumes from a paused seek after playback ends", async () => {
   const script = await readInlineScript();
   const context = vm.createContext({
@@ -103,7 +114,7 @@ test("age-restricted YouTube previews become actionable warnings", async () => {
   );
 });
 
-test("source and type filters are combined by intersection", async () => {
+test("Internet Archive refinements stay scoped to Archive results", async () => {
   const script = await readInlineScript();
   const context = vm.createContext({
     document: {
@@ -150,30 +161,24 @@ test("source and type filters are combined by intersection", async () => {
         var defaultIds = filtered().map(function (item) {
           return item.candidate.id;
         });
-        filters["sound-effect"] = true;
-        var soundEffects = filtered().map(function (item) {
+        filters["archive-sound-effect"] = true;
+        var archiveSoundEffects = filtered().map(function (item) {
           return item.candidate.id;
         });
-        filters.youtube = true;
-        var youtubeSoundEffects = filtered().map(function (item) {
+        filters["archive-sound-effect"] = false;
+        filters["archive-music"] = true;
+        var archiveMusic = filtered().map(function (item) {
           return item.candidate.id;
         });
-        filters["sound-effect"] = false;
-        filters.youtube = false;
-        filters.music = true;
-        var music = filtered().map(function (item) {
-          return item.candidate.id;
-        });
-        filters.music = false;
+        filters["archive-music"] = false;
         filters.archive = true;
         var archiveOnly = filtered().map(function (item) {
           return item.candidate.id;
         });
         return {
           defaultIds: defaultIds,
-          soundEffects: soundEffects,
-          youtubeSoundEffects: youtubeSoundEffects,
-          music: music,
+          archiveSoundEffects: archiveSoundEffects,
+          archiveMusic: archiveMusic,
           archiveOnly: archiveOnly,
         };
       })()
@@ -181,26 +186,24 @@ test("source and type filters are combined by intersection", async () => {
     context,
   ) as {
     defaultIds: string[];
-    soundEffects: string[];
-    youtubeSoundEffects: string[];
-    music: string[];
+    archiveSoundEffects: string[];
+    archiveMusic: string[];
     archiveOnly: string[];
   };
 
   // Archive is hidden until its source chip is selected.
   assert.deepEqual(Array.from(result.defaultIds), ["track", "effect"]);
-  assert.deepEqual(Array.from(result.soundEffects), ["effect"]);
-  assert.deepEqual(Array.from(result.youtubeSoundEffects), []);
-  assert.deepEqual(Array.from(result.music), ["track"]);
+  assert.deepEqual(Array.from(result.archiveSoundEffects), ["field"]);
+  assert.deepEqual(Array.from(result.archiveMusic), ["concert"]);
   assert.deepEqual(Array.from(result.archiveOnly), ["concert", "field"]);
 });
 
-function openverseFilterContext(script: string) {
+function sourceFilterContext(script: string) {
   const elements = new Map<string, Record<string, unknown>>();
   const makeEl = (id: string) => {
     const el: Record<string, unknown> = {
       id,
-      hidden: id === "openverseSubs",
+      hidden: id === "archiveSubs" || id === "openverseSubs",
       classList: {
         _values: new Set<string>(),
         toggle(name: string, force?: boolean) {
@@ -221,6 +224,10 @@ function openverseFilterContext(script: string) {
     elements.set(id, el);
     return el;
   };
+  makeEl("archiveNest");
+  makeEl("archiveWrap");
+  makeEl("archiveSubs");
+  makeEl("archiveChevron");
   makeEl("openverseNest");
   makeEl("openverseWrap");
   makeEl("openverseSubs");
@@ -257,7 +264,7 @@ function openverseFilterContext(script: string) {
 
 test("Openverse results stay hidden until the source nest is opted in", async () => {
   const script = await readInlineScript();
-  const { context } = openverseFilterContext(script);
+  const { context } = sourceFilterContext(script);
 
   const result = vm.runInContext(
     `
@@ -332,7 +339,7 @@ test("Openverse results stay hidden until the source nest is opted in", async ()
 
 test("source filters are single-select like Ableton categories", async () => {
   const script = await readInlineScript();
-  const { context } = openverseFilterContext(script);
+  const { context } = sourceFilterContext(script);
 
   const result = vm.runInContext(
     `
@@ -361,31 +368,69 @@ test("source filters are single-select like Ableton categories", async () => {
   assert.equal(result.expanded, false);
 });
 
-test("type filters are single-select", async () => {
+test("Internet Archive refinements are single-select", async () => {
   const script = await readInlineScript();
-  const { context } = openverseFilterContext(script);
+  const { context } = sourceFilterContext(script);
 
   const result = vm.runInContext(
     `
       (() => {
-        toggleFilter("music");
-        toggleFilter("sound-effect");
+        toggleFilter("archive-music");
+        toggleFilter("archive-sound-effect");
         return {
-          music: filters.music,
-          soundEffect: filters["sound-effect"],
+          archive: filters.archive,
+          music: filters["archive-music"],
+          soundEffect: filters["archive-sound-effect"],
+          expanded: archiveExpanded,
         };
       })()
     `,
     context,
-  ) as { music: boolean; soundEffect: boolean };
+  ) as {
+    archive: boolean;
+    music: boolean;
+    soundEffect: boolean;
+    expanded: boolean;
+  };
 
+  assert.equal(result.archive, false);
   assert.equal(result.music, false);
   assert.equal(result.soundEffect, true);
+  assert.equal(result.expanded, true);
+});
+
+test("Internet Archive chevron selects the category when expanding", async () => {
+  const script = await readInlineScript();
+  const { context, elements } = sourceFilterContext(script);
+
+  const result = vm.runInContext(
+    `
+      (() => {
+        toggleArchiveExpand();
+        return {
+          expanded: archiveExpanded,
+          archive: filters.archive,
+          hidden: document.getElementById("archiveSubs").hidden,
+        };
+      })()
+    `,
+    context,
+  ) as { expanded: boolean; archive: boolean; hidden: boolean };
+
+  assert.equal(result.expanded, true);
+  assert.equal(result.archive, true);
+  assert.equal(result.hidden, false);
+  assert.equal(
+    (
+      elements.get("archiveNest")?.classList as { _values: Set<string> }
+    )._values.has("expanded"),
+    true,
+  );
 });
 
 test("Openverse chevron selects the category when expanding", async () => {
   const script = await readInlineScript();
-  const { context, elements } = openverseFilterContext(script);
+  const { context, elements } = sourceFilterContext(script);
 
   const result = vm.runInContext(
     `

@@ -18,7 +18,7 @@ import {
   searchYouTube,
   searchYouTubeMusic,
 } from "./search.js";
-import type { Candidate, OpenverseProvider } from "./types.js";
+import type { Candidate, ItemKind, OpenverseProvider } from "./types.js";
 import { artistStr } from "./types.js";
 
 export type Brand =
@@ -113,7 +113,9 @@ function candidateFromValue(value: unknown): Candidate {
   const kind =
     raw.kind === "music" || raw.kind === "sound-effect" ? raw.kind : undefined;
   const provider =
-    source === "openverse" ? openverseProvider(raw.provider) : null;
+    source === "openverse" && typeof raw.provider === "string"
+      ? openverseProvider(raw.provider)
+      : null;
 
   return {
     id: raw.id,
@@ -269,6 +271,11 @@ export async function startSearchServer(opts: {
 
       if (req.method === "GET" && url.pathname === "/search") {
         const q = (url.searchParams.get("q") || "").trim();
+        const archiveKindValue = url.searchParams.get("archiveKind");
+        const archiveKind: ItemKind | undefined =
+          archiveKindValue === "music" || archiveKindValue === "sound-effect"
+            ? archiveKindValue
+            : undefined;
 
         if (!q) {
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -305,7 +312,10 @@ export async function startSearchServer(opts: {
             storageDir: opts.storageDir,
           }).catch(() => [] as Candidate[]),
           searchBbc(rankedQuery).catch(() => [] as Candidate[]),
-          searchArchive(rankedQuery).catch(() => [] as Candidate[]),
+          searchArchive(
+            rankedQuery,
+            archiveKind ? { kind: archiveKind } : {},
+          ).catch(() => [] as Candidate[]),
           searchOpenverse(rankedQuery).catch(() => [] as Candidate[]),
         ]);
         const ranked = rankCandidates(

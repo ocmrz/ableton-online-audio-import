@@ -278,6 +278,65 @@ test("searchArchive maps Advanced Search results to music candidates", async () 
   }
 });
 
+test("searchArchive applies an Archive-specific sound-effect query", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = "";
+  globalThis.fetch = async (input) => {
+    requestedUrl = String(input);
+    return new Response(
+      JSON.stringify({
+        response: {
+          docs: [
+            {
+              identifier: "rain-song",
+              title: "Rain Song",
+              runtime: "3:00",
+              collection: ["audio_music"],
+              subject: ["music"],
+            },
+            {
+              identifier: "forest-rain",
+              title: "Forest Rain Field Recording",
+              runtime: "1:30",
+              collection: ["folksoundomy_effects"],
+              subject: ["field recording", "nature sounds"],
+            },
+          ],
+        },
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const results = await searchArchive("rain", { kind: "sound-effect" });
+    const request = new URL(requestedUrl);
+    const archiveQuery = request.searchParams.get("q") ?? "";
+    assert.match(archiveQuery, /collection:\(folksoundomy_effects\)/);
+    assert.match(archiveQuery, /field recording/);
+    assert.equal(request.searchParams.get("rows"), "40");
+    assert.deepEqual(results, [
+      {
+        id: "forest-rain",
+        url: "https://archive.org/details/forest-rain",
+        title: "Forest Rain Field Recording",
+        artists: [],
+        album: null,
+        durationS: 90,
+        source: "archive",
+        channel: "Internet Archive",
+        searchRank: 0,
+        kind: "sound-effect",
+      },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("searchArchive fills missing runtime from item file lengths", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {

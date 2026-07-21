@@ -31,13 +31,14 @@
         soundcloud: false,
         bbc: false,
         archive: false,
+        "archive-music": false,
+        "archive-sound-effect": false,
         openverse: false,
         "openverse-freesound": false,
         "openverse-jamendo": false,
         "openverse-wikimedia_audio": false,
-        music: false,
-        "sound-effect": false,
       };
+      var archiveExpanded = false;
       var openverseExpanded = false;
       var selected = 0;
       var visible = [];
@@ -106,7 +107,8 @@
         "openverse-jamendo",
         "openverse-wikimedia_audio",
       ];
-      // Sources are Ableton-style single-select (one chip / one Openverse branch).
+      var ARCHIVE_KIND_KEYS = ["archive-music", "archive-sound-effect"];
+      // Sources are Ableton-style single-select (one chip / one nested branch).
       var SOURCE_FILTER_KEYS = [
         "youtube",
         "youtube-music",
@@ -114,8 +116,7 @@
         "bbc",
         "archive",
         "openverse",
-      ].concat(OPENVERSE_PROVIDER_KEYS);
-      var TYPE_FILTER_KEYS = ["music", "sound-effect"];
+      ].concat(ARCHIVE_KIND_KEYS, OPENVERSE_PROVIDER_KEYS);
 
       function brandIcon(brand) {
         var src = LOGOS[brand] || LOGOS.youtube;
@@ -1755,19 +1756,29 @@
         return filters.openverse || anyOpenverseProviderFilterOn();
       }
 
+      function anyArchiveKindFilterOn() {
+        return filters["archive-music"] || filters["archive-sound-effect"];
+      }
+
+      function anyArchiveFilterOn() {
+        return filters.archive || anyArchiveKindFilterOn();
+      }
+
+      function selectedArchiveKind() {
+        if (filters["archive-music"]) return "music";
+        if (filters["archive-sound-effect"]) return "sound-effect";
+        return "";
+      }
+
       function anySourceFilterOn() {
         return (
           filters.youtube ||
           filters["youtube-music"] ||
           filters.soundcloud ||
           filters.bbc ||
-          filters.archive ||
+          anyArchiveFilterOn() ||
           anyOpenverseFilterOn()
         );
-      }
-
-      function anyTypeFilterOn() {
-        return filters.music || filters["sound-effect"];
       }
 
       function itemType(item) {
@@ -1800,7 +1811,7 @@
       function archiveResultsAllowed() {
         // Opt-in only: Archive is too noisy in the default mixed results.
         // Still allow a pasted archive.org URL (search returns only Archive hits).
-        if (filters.archive) return true;
+        if (anyArchiveFilterOn()) return true;
         return (
           ranked.length > 0 &&
           ranked.every(function (item) {
@@ -1828,8 +1839,15 @@
         return !!(key && filters[key]);
       }
 
+      function archiveSourceMatches(item) {
+        if (!anyArchiveFilterOn()) return false;
+        var kind = selectedArchiveKind();
+        return !kind || itemType(item) === kind;
+      }
+
       function sourceMatches(item) {
         if (!anySourceFilterOn()) return true;
+        if (isArchiveItem(item)) return archiveSourceMatches(item);
         if (isOpenverseItem(item)) return openverseSourceMatches(item);
         return !!filters[item.brand || item.candidate.source];
       }
@@ -1840,8 +1858,7 @@
         return ranked.filter(function (s) {
           if (isArchiveItem(s) && !allowArchive) return false;
           if (isOpenverseItem(s) && !allowOpenverse) return false;
-          var typeMatches = !anyTypeFilterOn() || filters[itemType(s)];
-          return sourceMatches(s) && typeMatches;
+          return sourceMatches(s);
         });
       }
 
@@ -1935,6 +1952,29 @@
         closeWithResult(result);
       }
 
+      function syncArchiveExpand() {
+        var nest = document.getElementById("archiveNest");
+        var wrap = document.getElementById("archiveWrap");
+        var subrow = document.getElementById("archiveSubs");
+        var chevron = document.getElementById("archiveChevron");
+        if (!nest || !subrow || !chevron) return;
+        nest.classList.toggle("expanded", archiveExpanded);
+        // Class the chevron itself — nest uses display:contents, so descendant
+        // selectors are unreliable for the caret shape across both sources.
+        chevron.classList.toggle("is-expanded", archiveExpanded);
+        if (wrap) {
+          wrap.classList.toggle("has-active", anyArchiveFilterOn());
+        }
+        subrow.hidden = !archiveExpanded;
+        chevron.setAttribute(
+          "aria-expanded",
+          archiveExpanded ? "true" : "false",
+        );
+        chevron.title = archiveExpanded
+          ? "Hide Internet Archive types"
+          : "Show Internet Archive types";
+      }
+
       function syncOpenverseExpand() {
         var nest = document.getElementById("openverseNest");
         var wrap = document.getElementById("openverseWrap");
@@ -1942,6 +1982,7 @@
         var chevron = document.getElementById("openverseChevron");
         if (!nest || !subrow || !chevron) return;
         nest.classList.toggle("expanded", openverseExpanded);
+        chevron.classList.toggle("is-expanded", openverseExpanded);
         if (wrap) {
           wrap.classList.toggle("has-active", anyOpenverseFilterOn());
         }
@@ -1960,6 +2001,7 @@
           var key = el.getAttribute("data-filter");
           el.classList.toggle("active", !!filters[key]);
         });
+        syncArchiveExpand();
         syncOpenverseExpand();
       }
 
@@ -1977,53 +2019,54 @@
         return OPENVERSE_PROVIDER_KEYS.indexOf(key) !== -1;
       }
 
-      function isTypeFilterKey(key) {
-        return TYPE_FILTER_KEYS.indexOf(key) !== -1;
-      }
-
-      function clearTypeFilters() {
-        TYPE_FILTER_KEYS.forEach(function (key) {
-          filters[key] = false;
-        });
+      function isArchiveKindKey(key) {
+        return ARCHIVE_KIND_KEYS.indexOf(key) !== -1;
       }
 
       function selectSourceFilter(key) {
         // Ableton-style: one source branch at a time. Parent = whole category;
-        // a sub replaces the parent; leaving Openverse clears its subselection.
+        // a sub replaces the parent; leaving a branch clears its subselection.
         clearSourceFilters();
-        // Switching category clears type so Music does not hide FreeSound, etc.
-        clearTypeFilters();
+        if (key === "archive") {
+          filters.archive = true;
+          archiveExpanded = true;
+          openverseExpanded = false;
+          return;
+        }
+        if (isArchiveKindKey(key)) {
+          filters[key] = true;
+          archiveExpanded = true;
+          openverseExpanded = false;
+          return;
+        }
         if (key === "openverse") {
           filters.openverse = true;
+          archiveExpanded = false;
           openverseExpanded = true;
           return;
         }
         if (isOpenverseProviderKey(key)) {
           filters[key] = true;
+          archiveExpanded = false;
           openverseExpanded = true;
           return;
         }
         filters[key] = true;
+        archiveExpanded = false;
         openverseExpanded = false;
-      }
-
-      function selectTypeFilter(key) {
-        var turningOff = !!filters[key];
-        clearTypeFilters();
-        if (!turningOff) filters[key] = true;
       }
 
       function toggleFilter(key) {
         if (!key || !(key in filters)) return;
+        var previousArchiveKind = selectedArchiveKind();
 
-        if (isTypeFilterKey(key)) {
-          selectTypeFilter(key);
-        } else if (isSourceFilterKey(key)) {
+        if (isSourceFilterKey(key)) {
           if (filters[key]) {
             // Clicking the active source clears it (back to the default mix).
             clearSourceFilters();
-            // Keep the Openverse nest open after clearing a sub so the next
-            // provider is one click away; collapse when leaving the category.
+            // Keep a nest open after clearing a sub so the next refinement is
+            // one click away; collapse when clearing the parent.
+            if (!isArchiveKindKey(key)) archiveExpanded = false;
             if (!isOpenverseProviderKey(key)) openverseExpanded = false;
           } else {
             selectSourceFilter(key);
@@ -2035,6 +2078,31 @@
         syncFilterButtons();
         selected = 0;
         render();
+        if (previousArchiveKind !== selectedArchiveKind()) {
+          scheduleArchiveKindSearch();
+        }
+      }
+
+      function toggleArchiveExpand(event) {
+        if (event) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        if (archiveExpanded) {
+          archiveExpanded = false;
+          syncArchiveExpand();
+          return;
+        }
+        // Expanding is tied to selecting the category (Ableton browser style).
+        if (!anyArchiveFilterOn()) {
+          selectSourceFilter("archive");
+          syncFilterButtons();
+          selected = 0;
+          render();
+          return;
+        }
+        archiveExpanded = true;
+        syncArchiveExpand();
       }
 
       function toggleOpenverseExpand(event) {
@@ -2083,10 +2151,12 @@
         }, 25_000);
 
         try {
-          var res = await fetch(
-            "/search?q=" + encodeURIComponent(raw.trim()),
-            { signal: ctrl.signal },
-          );
+          var searchUrl = "/search?q=" + encodeURIComponent(raw.trim());
+          var archiveKind = selectedArchiveKind();
+          if (archiveKind) {
+            searchUrl += "&archiveKind=" + encodeURIComponent(archiveKind);
+          }
+          var res = await fetch(searchUrl, { signal: ctrl.signal });
           if (gen !== searchGen) return;
           if (!res.ok) {
             var errBody = "";
@@ -2146,6 +2216,11 @@
         }, DEBOUNCE_MS);
       }
 
+      function scheduleArchiveKindSearch() {
+        var q = document.getElementById("q");
+        if (q && q.value.trim()) scheduleSearch();
+      }
+
       document.addEventListener("DOMContentLoaded", function () {
         var q = document.getElementById("q");
         q.focus();
@@ -2155,6 +2230,10 @@
             toggleFilter(el.getAttribute("data-filter"));
           });
         });
+        var archiveChevron = document.getElementById("archiveChevron");
+        if (archiveChevron) {
+          archiveChevron.addEventListener("click", toggleArchiveExpand);
+        }
         var openverseChevron = document.getElementById("openverseChevron");
         if (openverseChevron) {
           openverseChevron.addEventListener("click", toggleOpenverseExpand);
@@ -2560,7 +2639,14 @@
       .chip-nest {
         display: contents;
       }
+      /* Keep every primary source chip on the first wrap row; nest
+         refinements always render below that row, not mid-row after a parent. */
+      .chips > .chip,
+      .chip-with-chevron {
+        order: 0;
+      }
       .chip-subrow {
+        order: 1;
         flex: 1 1 100%;
         display: flex;
         flex-wrap: wrap;
@@ -2568,7 +2654,7 @@
         align-items: center;
         box-sizing: border-box;
         margin: 1px 0 0;
-        padding: 0 0 0 6px;
+        padding: 0 0 0 3px;
         border-left: 2px solid var(--p-live-chip-active-bg);
       }
       .chip-subrow[hidden] {
@@ -2599,13 +2685,17 @@
         gap: 0;
       }
       .chip-expandable {
-        padding-right: 4px;
+        padding-right: 1px;
       }
       .chip-chevron {
         -webkit-appearance: none;
         appearance: none;
         margin: 0;
-        padding: 0 3px;
+        /* Fixed slot for the shared SVG caret — same for Archive and Openverse.
+           Content box is 12px tall (14px height − 1px top/bottom borders); use an
+           even caret size so flex centering lands on whole pixels. */
+        padding: 0 2px 0 0;
+        width: 12px;
         height: 14px;
         border: 1px solid transparent;
         border-left: 0;
@@ -2614,7 +2704,8 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        flex: 0 0 auto;
+        flex: 0 0 12px;
+        line-height: 0;
         cursor: default;
         box-sizing: border-box;
         outline: none;
@@ -2623,17 +2714,31 @@
       .chip-chevron:focus-visible {
         border-color: var(--p-live-surface-text);
       }
-      .chip-chevron::after {
-        content: "";
-        width: 0;
-        height: 0;
-        border-style: solid;
-        border-width: 2.5px 0 2.5px 4px;
-        border-color: transparent transparent transparent currentColor;
+      .chip-caret {
+        display: block;
+        width: 8px;
+        height: 8px;
+        flex: 0 0 8px;
+        margin: 0;
+        /* Do not clip — stroke extends past the path and a tight box shifts
+           the glyph ~1px off center. viewBox pads the stroke instead. */
+        overflow: visible;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.5;
+        stroke-linecap: square;
+        stroke-linejoin: miter;
       }
-      .chip-nest.expanded .chip-chevron::after {
-        border-width: 4px 2.5px 0 2.5px;
-        border-color: currentColor transparent transparent transparent;
+      .chip-caret-down {
+        display: none;
+      }
+      .chip-chevron.is-expanded .chip-caret-right,
+      .chip-nest.expanded .chip-chevron .chip-caret-right {
+        display: none;
+      }
+      .chip-chevron.is-expanded .chip-caret-down,
+      .chip-nest.expanded .chip-chevron .chip-caret-down {
+        display: block;
       }
       .chip-with-chevron.has-active .chip-expandable,
       .chip-with-chevron.has-active .chip-chevron {
@@ -3543,21 +3648,68 @@
                 />
                 BBC
               </button>
-              <button
-                class="chip"
-                type="button"
-                data-filter="archive"
-                title="Internet Archive"
-              >
-                <img
-                  class="brand-icon"
-                  src="__LOGO_ARCHIVE__"
-                  alt=""
-                  width="10"
-                  height="10"
-                />
-                Internet Archive
-              </button>
+              <div class="chip-nest" id="archiveNest">
+                <div class="chip-with-chevron" id="archiveWrap">
+                  <button
+                    class="chip chip-expandable"
+                    type="button"
+                    data-filter="archive"
+                    title="Internet Archive"
+                  >
+                    <img
+                      class="brand-icon"
+                      src="__LOGO_ARCHIVE__"
+                      alt=""
+                      width="10"
+                      height="10"
+                    />
+                    Internet Archive
+                  </button>
+                  <button
+                    class="chip-chevron"
+                    type="button"
+                    id="archiveChevron"
+                    aria-expanded="false"
+                    aria-controls="archiveSubs"
+                    title="Show Internet Archive types"
+                  >
+                    <svg
+                      class="chip-caret"
+                      viewBox="0 0 12 12"
+                      preserveAspectRatio="xMidYMid meet"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
+                      <path
+                        class="chip-caret-right"
+                        d="M4.4 2.6L7.9 6 4.4 9.4"
+                      />
+                      <path
+                        class="chip-caret-down"
+                        d="M2.6 4.4L6 7.9 9.4 4.4"
+                      />
+                    </svg>
+                  </button>
+                </div>
+                <div class="chip-subrow" id="archiveSubs" hidden>
+                  <button
+                    class="chip"
+                    type="button"
+                    data-filter="archive-music"
+                    title="Music on Internet Archive"
+                  >
+                    Music
+                  </button>
+                  <button
+                    class="chip"
+                    type="button"
+                    data-filter="archive-sound-effect"
+                    title="Sound effects and field recordings on Internet Archive"
+                  >
+                    Sound Effects &amp; Field Recordings
+                  </button>
+                </div>
+              </div>
               <div class="chip-nest" id="openverseNest">
                 <div class="chip-with-chevron" id="openverseWrap">
                   <button
@@ -3566,14 +3718,14 @@
                     data-filter="openverse"
                     title="Openverse"
                   >
-                  <img
-                    class="brand-icon brand-icon-openverse"
-                    src="__LOGO_OPENVERSE__"
-                    alt=""
-                    width="14"
-                    height="10"
-                  />
-                  Openverse
+                    <img
+                      class="brand-icon brand-icon-openverse"
+                      src="__LOGO_OPENVERSE__"
+                      alt=""
+                      width="14"
+                      height="10"
+                    />
+                    Openverse
                   </button>
                   <button
                     class="chip-chevron"
@@ -3582,7 +3734,24 @@
                     aria-expanded="false"
                     aria-controls="openverseSubs"
                     title="Show Openverse providers"
-                  ></button>
+                  >
+                    <svg
+                      class="chip-caret"
+                      viewBox="0 0 12 12"
+                      preserveAspectRatio="xMidYMid meet"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
+                      <path
+                        class="chip-caret-right"
+                        d="M4.4 2.6L7.9 6 4.4 9.4"
+                      />
+                      <path
+                        class="chip-caret-down"
+                        d="M2.6 4.4L6 7.9 9.4 4.4"
+                      />
+                    </svg>
+                  </button>
                 </div>
                 <div class="chip-subrow" id="openverseSubs" hidden>
                   <button
@@ -3611,38 +3780,6 @@
                   </button>
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-        <div class="sources filter-group" id="types">
-          <button
-            class="sources-header"
-            type="button"
-            id="typesToggle"
-            aria-expanded="true"
-            aria-controls="typesBody"
-          >
-            <span>Types</span>
-            <span class="sources-arrow" aria-hidden="true"></span>
-          </button>
-          <div class="toolbar" id="typesBody">
-            <div class="chips">
-              <button
-                class="chip"
-                type="button"
-                data-filter="music"
-                title="Music"
-              >
-                Music
-              </button>
-              <button
-                class="chip"
-                type="button"
-                data-filter="sound-effect"
-                title="Sound Effect"
-              >
-                Sound Effect
-              </button>
             </div>
           </div>
         </div>
