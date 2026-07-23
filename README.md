@@ -14,6 +14,10 @@ Online Audio searches YouTube, YouTube Music, SoundCloud, BBC Sound Effects, Int
   <img src="docs/images/og-image.jpg" alt="Online Audio search results in Ableton Live" width="100%">
 </p>
 
+## Demo
+
+https://github.com/user-attachments/assets/3a0104f0-5782-465e-b7a9-4da79ca42807
+
 ## How to use
 
 1. Right-click a clip slot, an Arrangement selection, or an audio track.
